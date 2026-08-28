@@ -1,0 +1,301 @@
+<title>判断書 — <案件名></title>
+<style>
+  /* 文字色は3段。--ink=見出し / --ink-2=読ませる本文（背景・前提・選択肢の説明・推奨理由） /
+     --muted=ラベルと補助表示だけ。本文を --muted に落とすと判断書全体が薄く見えるので混ぜない。
+     --rule 系は線、--fill は淡い塗り。線用の色を背景に流用すると、線と面のどちらかが必ず破綻する */
+  /* color-scheme を宣言しないと、ダークでも未選択ラジオが白丸で描かれ「選択済み」に見える */
+  :root {
+    color-scheme: light;
+    --paper: #EDF1F2; --card: #FFFFFF; --ink: #0F1619; --ink-2: #2C3A40; --muted: #43555B;
+    --rule: #C6D0D4; --rule-soft: #DDE5E8; --fill: #E4EAEC;
+    --accent: #0B6060; --accent-soft: #D5E9E7;
+    --crit: #A8352A; --high: #7A570A; --med: #4E5C63;
+    /* 本文の行長。rem 固定なので文字サイズの違う本文どうしでも右端が揃う（em だと要素ごとにずれる）。
+       日本語で1行40字前後。折り返し位置が要素ごとに動くと、それだけで読みにくくなる */
+    --measure: 38rem;
+    --body: "Hiragino Kaku Gothic ProN", "Yu Gothic", YuGothic, "Noto Sans JP", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --paper: #0B1013; --card: #1A2226; --ink: #E6EEF1; --ink-2: #C3D1D6; --muted: #9CAEB5;
+      --rule: #2F3B41; --rule-soft: #263136; --fill: #202A2F;
+      --accent: #5CCEC5; --accent-soft: #14322F;
+      --crit: #F0897A; --high: #E0AA4B; --med: #A0AEB6;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #0B1013; --card: #1A2226; --ink: #E6EEF1; --ink-2: #C3D1D6; --muted: #9CAEB5;
+    --rule: #2F3B41; --rule-soft: #263136; --fill: #202A2F;
+    --accent: #5CCEC5; --accent-soft: #14322F;
+    --crit: #F0897A; --high: #E0AA4B; --med: #A0AEB6;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --paper: #EDF1F2; --card: #FFFFFF; --ink: #0F1619; --ink-2: #2C3A40; --muted: #43555B;
+    --rule: #C6D0D4; --rule-soft: #DDE5E8; --fill: #E4EAEC;
+    --accent: #0B6060; --accent-soft: #D5E9E7;
+    --crit: #A8352A; --high: #7A570A; --med: #4E5C63;
+  }
+
+  body { background: var(--paper); color: var(--ink); font-family: var(--body); line-height: 1.6; font-size: 16px; -webkit-font-smoothing: antialiased; }
+  /* 段組みは1本。幅は --measure に合わせて詰め、本文が右に余る「死んだ帯」を作らない */
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 2.5rem 1.25rem 7rem; display: flex; flex-direction: column; gap: 2.6rem; }
+
+  .mast { display: flex; flex-direction: column; gap: 0.5rem; border-bottom: 2px solid var(--ink); padding-bottom: 1rem; }
+  .eyebrow { font-size: 0.8rem; letter-spacing: 0.04em; color: var(--muted); }
+  h1 { font-size: clamp(1.5rem, 3.6vw, 2rem); line-height: 1.35; font-weight: 700; text-wrap: balance; }
+  .lede { color: var(--ink-2); font-size: 0.95rem; }
+  h2 { font-size: 1.2rem; font-weight: 700; padding-bottom: 0.35rem; border-bottom: 1px solid var(--rule); }
+  /* カード間はカード内の余白(1rem)より広く取る。同じなら境界がカード内の区切りと見分けられない */
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+  p { max-width: var(--measure); }
+  code { font-family: var(--mono); font-size: 0.85em; color: var(--ink-2); background: var(--fill); padding: 0.08em 0.35em; border-radius: 2px; word-break: break-word; }
+
+  /* 判断カード。重要度は data-sev だけを見て色を決める（バッジ側にクラスを足すと2箇所がずれる） */
+  .dec { background: var(--card); border: 1px solid var(--rule); border-left: 5px solid var(--med); }
+  .dec[data-sev="crit"] { border-left-color: var(--crit); }
+  .dec[data-sev="high"] { border-left-color: var(--high); }
+  .dec[data-sev="med"]  { border-left-color: var(--med); }
+  /* 「読む材料は淡い地・選ぶところは素地」で塗り分ける。カードのどこから操作なのかが一目で分かる */
+  .dec .top { padding: 0.9rem 1rem 0.85rem; display: flex; flex-direction: column; gap: 0.6rem; background: var(--fill); border-bottom: 1px solid var(--rule); }
+  /* 淡い地の上では code の背景を反転させないとチップが地に溶ける */
+  .dec .top code { background: var(--card); }
+  .dec .idrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+  .did { font-family: var(--mono); font-weight: 700; font-size: 0.92rem; color: var(--accent); }
+  .dtitle { font-weight: 700; font-size: 1.06rem; line-height: 1.45; flex: 1 1 16rem; }
+  .badge { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; padding: 0.1rem 0.5rem; border-radius: 2px; white-space: nowrap; color: var(--card); background: var(--med); }
+  .dec[data-sev="crit"] .badge { background: var(--crit); }
+  .dec[data-sev="high"] .badge { background: var(--high); }
+
+  /* ラベルは左の列に固定し、本文は必ず同じ位置から始める。ラベルだけが --muted で、本文は --ink-2 */
+  .field { display: grid; grid-template-columns: 3.6rem 1fr; gap: 0 0.75rem; align-items: start; }
+  .lbl { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); padding-top: 0.32rem; white-space: nowrap; }
+  .dec .ctx { font-size: 0.95rem; line-height: 1.75; color: var(--ink-2); }
+  /* 行頭記号を置かない。ぶら下げインデントを入れると、この列の文字だけ他の本文より右にずれる。
+     箇条書きであることは行間で示す。ul の UA 既定 padding-left(40px)を消さないと、前提の本文
+     だけ背景・具体例より右にずれ、field 列で揃えたはずの左端が崩れる */
+  .dec ul.premise { list-style: none; margin: 0; padding: 0; max-width: var(--measure); display: flex; flex-direction: column; gap: 0.7rem; font-size: 0.95rem; line-height: 1.75; color: var(--ink-2); }
+  /* 「操作 → 結果」のシナリオは前提の事実とは役割が違うので、独立したラベル行に出して濃くする */
+  .dec .scenario { color: var(--ink); }
+
+  /* 左列を .field と同じ 3.6rem にして、ラジオを右端に寄せる。読む本文と選ぶ本文の開始位置が
+     カードを通して1本に揃い、視線の縦のラインが2種類にならない */
+  .opt { display: grid; grid-template-columns: 3.6rem 1fr; gap: 0 0.75rem; padding: 0.8rem 1rem; border-bottom: 1px solid var(--rule-soft); align-items: start; cursor: pointer; }
+  /* hover で地を変えると「読む地／選ぶ地」の塗り分けが崩れるので、左バーの太さだけで応える */
+  .opt:hover { box-shadow: inset 3px 0 0 var(--rule); }
+  .opt input[type="radio"] { justify-self: end; margin: 0.28rem 0 0; width: 1.15rem; height: 1.15rem; accent-color: var(--accent); }
+  /* フォーカスは行そのものに出す。1.15rem のラジオだけを囲っても、どの選択肢にいるか分からない */
+  .opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .opt input:focus-visible { outline: none; }
+  /* 選択は「アクセント色の塗り + 左バー」。推奨タグ（濃い塗り）と形を変えて、選択と推奨を混同させない */
+  .opt:has(input:checked) { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .opt .oname { display: block; max-width: var(--measure); font-weight: 700; font-size: 1rem; line-height: 1.55; }
+  .opt .odesc { display: block; max-width: var(--measure); font-size: 0.9rem; line-height: 1.7; color: var(--ink-2); margin-top: 0.15rem; }
+  /* 推奨理由は推奨案の行の中に置く。「なぜ推すか」は推す対象の隣にあるべきで、
+     カード末尾の帯に切り出すと、どの案の話か読み手が戻って確かめることになる */
+  .opt .owhy { display: block; max-width: var(--measure); font-size: 0.88rem; line-height: 1.7; color: var(--ink-2); margin-top: 0.45rem; }
+  /* ラベルを行内に置くと、その1行目だけ文章の開始位置が右にずれる。独立した行にする */
+  .opt .olbl { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
+  .rectag { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; background: var(--ink); color: var(--card); padding: 0.1rem 0.4rem; border-radius: 2px; margin-left: 0.4rem; vertical-align: 0.12em; }
+  .opt.other .other-text { display: block; width: 100%; max-width: var(--measure); margin-top: 0.35rem; font: inherit; font-size: 0.92rem; color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 2px; padding: 0.4rem 0.6rem; }
+  /* カードは選択肢で終わる。最後の行の下線はカードの枠と二重になる */
+  .opt:last-child { border-bottom: 0; }
+
+  /* 修正一覧の表 */
+  .tablebox { overflow-x: auto; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; background: var(--card); font-size: 0.92rem; color: var(--ink-2); }
+  th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
+  tbody tr:last-child td { border-bottom: 0; }
+  /* 判断カードの ID も数字なので、こちらは装飾を落として「呼び名ではない通し番号」に見せる */
+  td.rowno { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+
+  /* 回答バー */
+  .answerbar { position: sticky; bottom: 0; margin: 0 -1.25rem -7rem; padding: 0.7rem 1.25rem 0.9rem; background: var(--card); border-top: 2px solid var(--ink); display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; box-shadow: 0 -6px 16px rgb(0 0 0 / 0.14); }
+  .answerbar .label { font-size: 0.75rem; letter-spacing: 0.04em; color: var(--muted); }
+  #count { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.78rem; font-weight: 700; color: var(--accent); margin-left: auto; }
+  /* グローバルの code スタイル（淡背景）を打ち消す。チップ状になると1行の帯として読めない */
+  #answer-line { flex-basis: 100%; font-family: var(--mono); font-size: 0.95rem; color: var(--ink); overflow-x: auto; white-space: nowrap; padding: 0.3rem 0; background: transparent; }
+  .answerbar button { font: inherit; font-size: 0.88rem; font-weight: 700; border-radius: 2px; padding: 0.5rem 1rem; cursor: pointer; }
+  .answerbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #fill-rec-btn { color: var(--ink); background: transparent; border: 1px solid var(--rule); }
+  #fill-rec-btn:hover { border-color: var(--ink); }
+  /* 埋める対象が無いときは押せない。押してから回答行で「何も変わらなかった」と気づくのを避ける */
+  #fill-rec-btn:disabled { color: var(--muted); border-color: var(--rule-soft); cursor: default; }
+  #copy-btn { color: var(--card); background: var(--ink); border: 0; }
+
+  /* 狭い画面ではラベル列を畳む。3.6rem を残すと本文が1行3〜4字になって読めない。
+     選択肢はラジオぶんだけ残す（畳むとラジオと文が縦に並んで押しどころが分からなくなる） */
+  @media (max-width: 34rem) {
+    .field { grid-template-columns: 1fr; gap: 0.1rem 0; }
+    .lbl { padding-top: 0; }
+    .opt { grid-template-columns: auto 1fr; gap: 0 0.7rem; }
+    /* カウンタの補足まで出すと回答バーが1行ぶん伸びる。狭い画面では常時見える面積のほうが重い */
+    #count .hint { display: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">判断書 — <文脈></div>
+    <h1><判断件数と、決めると何が進むか></h1>
+    <p class="lede"><回答方法の説明。「触れなかった論点はスキップ（今回は決めない）扱い。推奨どおりで良ければ『残りを推奨で埋める』→ コピーが最短」と添える></p>
+  </header>
+
+  <section>
+    <h2>判断が要るもの</h2>
+
+    <!-- 判断カード: data-id / data-slug / name=ID / 推奨ラジオ class="rec" の対応を守る。
+         論点の ID は数字、選択肢は大文字。回答行が「1(スラッグ)=A」になり、論点番号と回答が
+         数字どうしで並ばない。data-sev は crit / high / med。影響の大きい順に並べ ID もその順。
+         推奨は先頭に置くが checked にしない（未選択=スキップ）。タイトルは疑問文。
+         背景・前提・推奨理由は .field + .lbl のラベル列に載せる（ラベルだけが淡色）。
+         バッジは ID の直後（左端に「1 致命」が揃うと、拾い読みで重要度を追える）。
+         選択肢は role="radiogroup" + aria-labelledby でタイトルに結ぶ（読み上げで論点が分かる） -->
+    <div class="dec" data-id="1" data-slug="<短いスラッグ>" data-sev="crit">
+      <div class="top">
+        <div class="idrow"><span class="did">1</span><span class="badge">致命</span><span class="dtitle" id="dtitle-1"><疑問文の論点タイトル（〜するか?）></span></div>
+        <div class="field">
+          <span class="lbl">背景</span>
+          <p class="ctx"><何の仕組みの話かを、チャット未読でも通じる日常語で1〜2文。専門語はここで一言説明></p>
+        </div>
+        <div class="field">
+          <span class="lbl">前提</span>
+          <ul class="premise">
+            <li><1行1事実の単文。証拠は行末に <code>ファイル:行</code>></li>
+            <li><事実2。カード内で説明していない略語・相対参照は使わない></li>
+          </ul>
+        </div>
+        <div class="field">
+          <span class="lbl">具体例</span>
+          <p class="ctx scenario"><「操作 → 結果」の具体シナリオ1文。不具合の無い選択形の論点では「この判断が問われる場面」></p>
+        </div>
+      </div>
+      <div role="radiogroup" aria-labelledby="dtitle-1">
+        <label class="opt">
+          <input type="radio" name="1" value="A" class="rec">
+          <span><span class="oname">A. <推奨案><span class="rectag">推奨</span></span><span class="odesc"><選んだ場合に何が起きるか></span><span class="owhy"><span class="olbl">推奨理由</span><1〜2文></span></span>
+        </label>
+        <label class="opt">
+          <input type="radio" name="1" value="B">
+          <span><span class="oname">B. <対案></span><span class="odesc"><トレードオフ></span></span>
+        </label>
+        <label class="opt other">
+          <input type="radio" name="1" value="OTHER">
+          <span><span class="oname">その他</span><input type="text" class="other-text" data-for="1" placeholder="自由記述"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- 2 以降も同じ構造で -->
+  </section>
+
+  <section>
+    <h2>直すだけのもの（判断不要）</h2>
+    <!-- ここは判断書の提示と同時に着手してよい。判断カードの結論に依存する行は「論点◯の回答待ち」と明記して保留 -->
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>#</th><th>症状</th><th>修正案</th><th>該当箇所</th></tr></thead>
+        <tbody>
+          <tr><td class="rowno">1</td><td><症状></td><td><一意に決まる修正></td><td><code>ファイル:行</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 回答行を先頭に置いて2段に収める。常時画面を占めるので段数がそのまま読める面積を削る -->
+  <div class="answerbar">
+    <code id="answer-line"></code>
+    <span class="label">未選択＝スキップ</span>
+    <span id="count"></span>
+    <button id="fill-rec-btn" type="button">残りを推奨で埋める</button>
+    <button id="copy-btn" type="button">コピー</button>
+  </div>
+
+</div>
+
+<script>
+  // 回答行の生成: 判断カードの data-id / data-slug と name=ID の対応が前提。未選択=スキップ。
+  function buildAnswerLine() {
+    return [...document.querySelectorAll(".dec[data-id]")].map((card) => {
+      const id = card.dataset.id;
+      const slug = card.dataset.slug;
+      const sel = card.querySelector(`input[name="${id}"]:checked`);
+      if (!sel) return `${id}(${slug})=スキップ`;
+      if (sel.value === "OTHER") {
+        const text = (card.querySelector(`.other-text[data-for="${id}"]`)?.value ?? "").trim();
+        return `${id}(${slug})=その他(${text || "未記入"})`;
+      }
+      return `${id}(${slug})=${sel.value}`;
+    }).join(" ");
+  }
+
+  const line = document.getElementById("answer-line");
+  const count = document.getElementById("count");
+  const fillBtn = document.getElementById("fill-rec-btn");
+  // スキップは「今回は決めない」という有効な回答なので、未回答としては数えない。
+  // 「0件 回答済み」だと全件スキップが未着手に見え、催促しない方針と表示が食い違う。
+  function sync() {
+    line.textContent = buildAnswerLine();
+    const cards = [...document.querySelectorAll(".dec[data-id]")];
+    const done = cards.filter((c) => c.querySelector(`input[name="${c.dataset.id}"]:checked`)).length;
+    const skipped = cards.length - done;
+    if (done === 0) {
+      // 補足は .hint に分けておく。狭い画面ではここだけ畳んで、バーの行数を増やさない
+      count.innerHTML = `${cards.length}件ともスキップ<span class="hint">（このまま返すと全件見送り）</span>`;
+    } else if (skipped === 0) {
+      count.textContent = `${cards.length}件とも決定`;
+    } else {
+      count.textContent = `決定 ${done}件 ・ スキップ ${skipped}件`;
+    }
+    // 押す前に何件に効くかを見せる。押してから回答行で確かめる往復を省く
+    fillBtn.textContent = skipped ? `残りの${skipped}件を推奨で埋める` : "残りを推奨で埋める";
+    fillBtn.disabled = skipped === 0;
+  }
+  document.addEventListener("input", (e) => {
+    // 自由記述に入力し始めたら「その他」を自動選択する
+    if (e.target.classList?.contains("other-text")) {
+      const id = e.target.dataset.for;
+      const radio = document.querySelector(`input[name="${id}"][value="OTHER"]`);
+      if (radio) radio.checked = true;
+    }
+    sync();
+  });
+  sync();
+
+  // 未選択のカードだけ推奨（class="rec"）を選択する。選択済み・スキップ以外の意思表示は上書きしない
+  fillBtn.addEventListener("click", () => {
+    document.querySelectorAll(".dec[data-id]").forEach((card) => {
+      const id = card.dataset.id;
+      if (!card.querySelector(`input[name="${id}"]:checked`)) {
+        const rec = card.querySelector(`input[name="${id}"].rec`);
+        if (rec) rec.checked = true;
+      }
+    });
+    sync();
+  });
+
+  document.getElementById("copy-btn").addEventListener("click", async (e) => {
+    const text = line.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      e.target.textContent = "コピーしました";
+    } catch {
+      // iframe の Permissions Policy は clipboard API だけを塞ぐ。execCommand はユーザー操作が
+      // あれば通ることが多いので、選択を作ってから試す。失敗しても選択は残り手動コピーに繋がる
+      const range = document.createRange();
+      range.selectNodeContents(line);
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(range);
+      let copied = false;
+      try { copied = document.execCommand("copy"); } catch {}
+      e.target.textContent = copied ? "コピーしました" : "選択しました（⌘C / Ctrl+C）";
+    }
+    setTimeout(() => { e.target.textContent = "コピー"; }, 2000);
+  });
+</script>
