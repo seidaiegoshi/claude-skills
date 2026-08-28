@@ -27,7 +27,7 @@ unzip claude-skills.zip -d ~/.claude/skills/
 ### このリポジトリから直接入れる場合
 
 ```bash
-git clone https://github.com/<owner>/claude-skills.git
+git clone https://github.com/seidaiegoshi/claude-skills.git
 cp -R claude-skills/skills/* ~/.claude/skills/
 ```
 
