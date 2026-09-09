@@ -100,7 +100,8 @@
   /* ラベルを行内に置くと、その1行目だけ文章の開始位置が右にずれる。独立した行にする */
   .opt .olbl { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
   .rectag { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; background: var(--ink); color: var(--card); padding: 0.1rem 0.4rem; border-radius: 2px; margin-left: 0.4rem; vertical-align: 0.12em; }
-  .opt.other .other-text { display: block; width: 100%; max-width: var(--measure); margin-top: 0.35rem; font: inherit; font-size: 0.92rem; color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 2px; padding: 0.4rem 0.6rem; }
+  /* 高さは JS が中身に合わせて伸ばす。resize/overflow を戻すと手動リサイズと競合してガタつく */
+  .opt.other .other-text { display: block; box-sizing: border-box; width: 100%; max-width: var(--measure); margin-top: 0.35rem; font: inherit; font-size: 0.92rem; line-height: 1.7; color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 2px; padding: 0.4rem 0.6rem; resize: none; overflow: hidden; }
   /* カードは選択肢で終わる。最後の行の下線はカードの枠と二重になる */
   .opt:last-child { border-bottom: 0; }
 
@@ -186,7 +187,7 @@
         </label>
         <label class="opt other">
           <input type="radio" name="1" value="OTHER">
-          <span><span class="oname">その他</span><input type="text" class="other-text" data-for="1" placeholder="自由記述"></span>
+          <span><span class="oname">その他</span><textarea class="other-text" data-for="1" rows="1" placeholder="自由記述"></textarea></span>
         </label>
       </div>
     </div>
@@ -227,11 +228,17 @@
       const sel = card.querySelector(`input[name="${id}"]:checked`);
       if (!sel) return `${id}(${slug})=スキップ`;
       if (sel.value === "OTHER") {
-        const text = (card.querySelector(`.other-text[data-for="${id}"]`)?.value ?? "").trim();
+        const text = (card.querySelector(`.other-text[data-for="${id}"]`)?.value ?? "").replace(/\s+/g, " ").trim();
         return `${id}(${slug})=その他(${text || "未記入"})`;
       }
       return `${id}(${slug})=${sel.value}`;
     }).join(" ");
+  }
+
+  // scrollHeight は border を含まないので、border-box の差分を足さないと1行ぶん足りずスクロールが出る
+  function autoGrow(el) {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
   }
 
   const line = document.getElementById("answer-line");
@@ -259,12 +266,14 @@
   document.addEventListener("input", (e) => {
     // 自由記述に入力し始めたら「その他」を自動選択する
     if (e.target.classList?.contains("other-text")) {
+      autoGrow(e.target);
       const id = e.target.dataset.for;
       const radio = document.querySelector(`input[name="${id}"][value="OTHER"]`);
       if (radio) radio.checked = true;
     }
     sync();
   });
+  document.querySelectorAll(".other-text").forEach(autoGrow);
   sync();
 
   // 未選択のカードだけ推奨（class="rec"）を選択する。選択済み・スキップ以外の意思表示は上書きしない

@@ -1,0 +1,17 @@
+{
+  "description": "コメント規約の機械検査。編集のたびに走り、区切り線・装飾コメントの追加はブロック、その他のコメント追加と長い docstring には判断テストを注入する。",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comment-policy-check.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

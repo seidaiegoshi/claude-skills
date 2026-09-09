@@ -1,68 +1,64 @@
 # claude-skills
 
-Claude Code 用のスキル 2 本。**報告と判断の出し方**を揃えるためのもので、
-どちらも「文章の書き方・HTML の作り方の手順」を Claude に渡す Markdown ファイルです。
+Claude Code 用のプラグイン `mitate`。**報告・判断・レビューの出し方を揃える**ためのスキル 4 本と、
+コメント規約の機械検査フック 1 本が入っている。中身は Claude に渡す Markdown の手順書と、
+それが使う雛形・スクリプト。
 
 | スキル | 何をするか |
 |---|---|
-| [`visual-explanation`](skills/visual-explanation/SKILL.md) | 設計提案・調査結果・変更サマリを説明するとき、図にする / しないの判断、図の型の選び方、出し方（HTML アーティファクト / インライン図解）を決める |
-| [`siji-decision-sheet`](skills/siji-decision-sheet/SKILL.md) | 判断が要る論点を「1 論点 = 1 カード」の HTML に並べ、下部の回答バーをコピーして返すだけで決定が確定する判断書を作る |
+| [`siji-decision-sheet`](plugins/mitate/skills/siji-decision-sheet/SKILL.md) | 判断が要る論点を「1 論点 = 1 カード」の HTML に並べ、下部の回答バーをコピーして返すだけで決定が確定する判断書を作る |
+| [`visual-explanation`](plugins/mitate/skills/visual-explanation/SKILL.md) | 設計提案・調査結果・変更サマリを説明するとき、図にする / しないの判断、図の型の選び方、完了報告の組み立て方を決める。画面キャプチャの撮影・埋め込みスクリプトを同梱 |
+| [`concise-comments`](plugins/mitate/skills/concise-comments/SKILL.md) | コードコメントと docstring を簡潔に保つ判断基準。「なに」を消して「なぜ」を残す |
+| [`design-kaizen-teian`](plugins/mitate/skills/design-kaizen-teian/SKILL.md) | 動いている画面をブラウザで開き、コントラスト比や余白を実測したうえで「修正前 ↔ 提案」の HTML を出す |
 
-2 本は独立しています。片方だけ入れても動きます。
+スキルは互いに独立している。使わないスキルは呼ばれないので、何も起きない。
 
 ## 導入
 
-スキルは `~/.claude/skills/` 配下に置くと、全プロジェクトで使えるようになります。
-Claude Code の再起動が要ります。
-
-### ZIP を受け取った場合
-
 ```bash
-unzip claude-skills.zip -d ~/.claude/skills/
+claude plugin marketplace add seidaiegoshi/claude-skills
+claude plugin install mitate@claude-skills
 ```
 
-`~/.claude/skills/visual-explanation/` と `~/.claude/skills/siji-decision-sheet/` が
-できていれば成功です。
+Claude Code の対話セッションからは `/plugin marketplace add seidaiegoshi/claude-skills` →
+`/plugin install mitate@claude-skills` でも同じ。反映には再起動が要る。
 
-### このリポジトリから直接入れる場合
-
-```bash
-git clone https://github.com/seidaiegoshi/claude-skills.git
-cp -R claude-skills/skills/* ~/.claude/skills/
-```
-
-### 特定のプロジェクトだけで使いたい場合
-
-`~/.claude/skills/` の代わりに、そのリポジトリの `.claude/skills/` に置きます。
-この場合はコミットされるので、チーム全員のセッションに載ります。
-
-## 入ったかどうかの確認
-
-Claude Code を再起動して、次のように聞きます。
-
-```
-判断が必要な論点があるので判断書にして
-```
-
-`siji-decision-sheet` を使う旨が出れば読み込まれています。
-`/visual-explanation` のようにスラッシュで直接呼ぶこともできます。
+入ったかどうかは、スキル一覧に `mitate:siji-decision-sheet` のように `mitate:` 付きで並ぶかで分かる。
 
 ## 更新
 
-このリポジトリが更新されたら、ZIP を受け取り直して同じ手順で上書きするか、
-`git pull` してコピーし直してください。自動では降りてきません。
+```bash
+claude plugin update mitate
+```
+
+このリポジトリを更新したら、各 PC でこれを実行すれば降りてくる。
+
+## 同梱フック（コメント規約の機械検査）
+
+インストールすると、`Edit` / `Write` のたびに `hooks/comment-policy-check.sh` が走る。
+
+- 区切り線・装飾コメント（`# ---- 設定 ----` など）の追加は**その場で差し戻す**
+- それ以外のコメント追加と、本文 4 行以上の docstring には**判断テストを注入する**（ブロックはしない）
+
+意味判断は機械化できないので、書いた直後に見直させる方式を採っている。判断基準の一次情報は
+`concise-comments` スキル。
+
+**注意**: 以前このスクリプトを `~/.claude/settings.json` の hooks に直接登録していた場合は、
+その登録を消すこと。消さないと 1 回の編集で 2 回走る。
 
 ## 前提
 
-- `siji-decision-sheet` は HTML を Artifact として公開できる環境（Claude Code / claude.ai）を前提にします。
-- `visual-explanation` のセクション 4 はインライン図解ツール（`show_widget`）がある場合の作法です。
-  無い環境では同スキルのセクション 3・6 に落ちるので、入れて壊れることはありません。
+- `siji-decision-sheet` は HTML を Artifact として公開できる環境（Claude Code / claude.ai）を前提にする
+- `visual-explanation` のキャプチャ機能は Node + Playwright が要る。図解の判断基準そのものは無くても効く
+- `design-kaizen-teian` はブラウザ操作ツール（Claude Code のブラウザペイン等）が要る
 
-## ZIP を作り直す
+## ~/.claude/skills/ に直接置く場合
+
+プラグインを使わず、スキル 1 本だけ手元に置くこともできる。
 
 ```bash
-./build-zip.sh
+cp -R plugins/mitate/skills/siji-decision-sheet ~/.claude/skills/
 ```
 
-`dist/claude-skills.zip` ができます。中身は `skills/` 配下そのままなので、
-受け取った側は `~/.claude/skills/` に展開するだけです。
+`visual-explanation` のキャプチャ用コマンドは `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}` を基準にしているので、
+この置き方でもパスは通る。フックを使う場合は `~/.claude/settings.json` に自分で登録する。

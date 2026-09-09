@@ -107,6 +107,8 @@ description: ユーザーの判断が必要な論点（仕様の選択・修正�
 - 選択肢は `<div role="radiogroup" aria-labelledby="dtitle-<ID>">` で囲み、論点タイトルの
   `<span class="dtitle">` に `id="dtitle-<ID>"` を振る。これが無いと読み上げで選択肢の文言
   だけが読まれ、どの論点のものか伝わらない。
+- その他の自由記述は `<textarea class="other-text" rows="1">`。入力量に応じて高さが伸びる。
+  `input type="text"` に戻さない（長い記述が1行に押し込まれ、書いた本人が読み返せなくなる）。
 - 回答バーのカウンタと一括ボタンのラベルは `sync()` が状態から組み立てる（件数・disabled も）。
   文言を静的に書き戻さない。
 - Artifact で公開する（`artifact-design` の読み込みは Artifact 側の必須手順に従う）。

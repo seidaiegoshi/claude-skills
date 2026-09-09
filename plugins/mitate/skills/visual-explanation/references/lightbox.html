@@ -1,0 +1,65 @@
+<!-- 画像・図をクリックで全画面表示する。報告 HTML の末尾に1回だけ貼る。
+     対象は data-zoom を付けた img / figure（embed.sh の出力には自動で付く）。 -->
+<style>
+  [data-zoom] { cursor: zoom-in; }
+  #vx-lightbox { position: fixed; inset: 0; z-index: 2147483000; display: none;
+                 align-items: center; justify-content: center; padding: 2vmin;
+                 background: rgba(0, 0, 0, .84); cursor: zoom-out; }
+  #vx-lightbox.is-open { display: flex; }
+  #vx-lightbox-body { max-width: 96vw; max-height: 94vh; overflow: auto; }
+  #vx-lightbox-body > img { display: block; width: auto; height: auto;
+                            max-width: 96vw; max-height: 94vh; }
+  /* SVG は地が透けるので、暗転背景の上でも図の配色のまま読めるよう下地を敷く */
+  #vx-lightbox-body > svg { display: block; width: min(96vw, 1400px);
+                            height: auto; max-height: 94vh; box-sizing: border-box;
+                            padding: 16px; border-radius: 6px;
+                            background: var(--surface, #fff); }
+  #vx-lightbox-close { position: fixed; top: 8px; right: 16px; padding: 8px 12px;
+                       font: 28px/1 system-ui, sans-serif; color: #fff;
+                       background: none; border: 0; cursor: pointer; }
+</style>
+<div id="vx-lightbox" role="dialog" aria-modal="true" aria-label="拡大表示">
+  <button id="vx-lightbox-close" type="button" aria-label="閉じる">&times;</button>
+  <div id="vx-lightbox-body"></div>
+</div>
+<script>
+(() => {
+  if (window.__vxLightbox) return;
+  window.__vxLightbox = true;
+
+  const box = document.getElementById("vx-lightbox");
+  const body = document.getElementById("vx-lightbox-body");
+
+  // 複製はクリック時に行う。mermaid は描画後に <pre> が SVG へ差し替わるため、先に掴むと空になる
+  const open = (host) => {
+    const node = host.matches("img, svg") ? host : host.querySelector("img, svg") || host;
+    body.replaceChildren(node.cloneNode(true));
+    box.classList.add("is-open");
+    document.body.style.overflow = "hidden";
+  };
+  const close = () => {
+    box.classList.remove("is-open");
+    body.replaceChildren();
+    document.body.style.overflow = "";
+  };
+
+  document.addEventListener("click", (e) => {
+    if (box.contains(e.target)) return close();
+    const host = e.target.closest("[data-zoom]");
+    if (host) open(host);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") return close();
+    const focused = document.activeElement;
+    if ((e.key === "Enter" || e.key === " ") && focused && focused.matches("[data-zoom]")) {
+      e.preventDefault();
+      open(focused);
+    }
+  });
+
+  for (const el of document.querySelectorAll("[data-zoom]")) {
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+  }
+})();
+</script>

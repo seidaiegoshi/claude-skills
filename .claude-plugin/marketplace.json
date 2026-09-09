@@ -1,0 +1,20 @@
+{
+  "name": "claude-skills",
+  "owner": {
+    "name": "seidaiegoshi",
+    "url": "https://github.com/seidaiegoshi"
+  },
+  "metadata": {
+    "description": "報告・判断・レビューの出し方を揃える自作スキル群",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "mitate",
+      "source": "./plugins/mitate",
+      "description": "判断書・報告の図解・コメント規約・画面レビューの4スキルと、コメント規約の機械検査フック",
+      "category": "productivity",
+      "tags": ["skills", "report", "decision", "review", "japanese"]
+    }
+  ]
+}
