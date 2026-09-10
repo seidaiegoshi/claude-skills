@@ -32,6 +32,12 @@ claude plugin update mitate
 ```
 
 このリポジトリを更新したら、各 PC でこれを実行すれば降りてくる。
+ただし `plugin.json` の**バージョン番号を据え置いたまま中身だけ直した場合は、`update` が
+「already at the latest version」で何もせず終わる**ことがある。そのときは入れ直す。
+
+```bash
+claude plugin uninstall mitate@claude-skills && claude plugin install mitate@claude-skills
+```
 
 ## 前提
 
