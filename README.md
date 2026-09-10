@@ -9,7 +9,7 @@ Markdown の手順書と、それが使う雛形・スクリプト。
 | スキル | 何をするか |
 |---|---|
 | [`visual-explanation`](plugins/mitate/skills/visual-explanation/SKILL.md) | **理解を速くする。** 設計提案・調査結果・変更サマリを説明するとき、図にする / しないの判断、図の型の選び方、完了報告の組み立て方を決める。画面キャプチャの撮影・埋め込みスクリプトを同梱 |
-| [`siji-decision-sheet`](plugins/mitate/skills/siji-decision-sheet/SKILL.md) | **判断を速くする。** 判断が要る論点を「1 論点 = 1 カード」の HTML に並べ、下部の回答バーをコピーして返すだけで決定が確定する判断書を作る |
+| [`siji-decision-sheet`](plugins/mitate/skills/siji-decision-sheet/SKILL.md) | **判断を速くする。** 判断が要る論点を「1 論点 = 1 カード」の HTML に並べ、下部の回答バーをコピーして返すだけで決定が確定する判断書を作る。画面が絡む論点では、決定済みの方針を先に集め、実物を開いて実測してから前提を書く。WCAG コントラスト計測スクリプトを同梱 |
 
 スキルは互いに独立している。使わないスキルは呼ばれないので、何も起きない。
 
@@ -35,7 +35,7 @@ claude plugin update mitate
 
 ## 前提
 
-- `siji-decision-sheet` は HTML を Artifact として公開できる環境（Claude Code / claude.ai）を前提にする
+- `siji-decision-sheet` は HTML を Artifact として公開できる環境（Claude Code / claude.ai）を前提にする。画面が絡む論点を扱うときだけブラウザを開く手段が要る（無い環境では前提の行末に「未実測」と書いて進む）
 - `visual-explanation` のキャプチャ機能は Node + Playwright が要る。図解の判断基準そのものは無くても効く
 
 ## ~/.claude/skills/ に直接置く場合
