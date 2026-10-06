@@ -20,6 +20,18 @@
         "decision",
         "japanese"
       ]
+    },
+    {
+      "name": "session-log",
+      "source": "./plugins/session-log",
+      "description": "セッションで出した指示の履歴と、作業中の指示の進捗バーをペインと入力欄の上の帯に出す mod",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "progress",
+        "history",
+        "japanese"
+      ]
     }
   ]
 }
