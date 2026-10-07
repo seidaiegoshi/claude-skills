@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Entry, EntryStatus, Place } from '../types'
+import type { Entry, EntryStatus, Place, Task, TaskStatus } from '../types'
 
 const PANE = 'session-log'
 const TITLE = '指示の履歴'
@@ -16,14 +16,17 @@ const PROGRESS_RULE =
 const entries = atom({ plugin: 'session-log', key: 'entries' } as const, [])
 const now = atom({ plugin: 'session-log', key: 'now' } as const, 0)
 const place = atom({ plugin: 'session-log', key: 'place' } as const, null)
+const tasks = atom({ plugin: 'session-log', key: 'tasks' } as const, [])
 
 const ICON: Record<EntryStatus, string> = {
+  queued: '…',
   running: '▶',
   done: '✓',
   aborted: '■',
   error: '✗',
 }
 const STATUS_WORD: Record<EntryStatus, string> = {
+  queued: '待ち',
   running: '作業中',
   done: '完了',
   aborted: '中断',
@@ -69,13 +72,21 @@ const duration = (seconds: number) =>
   seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`
 
 const isRunning = (entry: Entry) => entry.status === 'running'
+const isQueued = (entry: Entry) => entry.status === 'queued'
 
-// 色は作業中だけに付け、終わった指示は状態を問わずグレーにする
-const toneOf = (entry: Entry) => (isRunning(entry) ? 'yellow' : 'gray')
+// 色は作業中と待ちだけに付け、終わった指示は状態を問わずグレーにする
+const toneOf = (entry: Entry) => (isRunning(entry) ? 'yellow' : isQueued(entry) ? 'blue' : 'gray')
 
 const latestRunning = (list: Entry[]) => list.findLast(isRunning)
 
-const newEntry = (fields: Pick<Entry, 'id' | 'text' | 'at' | 'status' | 'turnId'>): Entry => ({
+// 走っているターンに待ちの指示が取り込まれると作業中が複数になる。
+// 進捗を申告した指示があればそれを主とし、バーがそちらから外れないようにする
+const focusRunning = (list: Entry[]) =>
+  list.findLast(entry => isRunning(entry) && entry.steps.length > 0) ?? latestRunning(list)
+
+const newEntry = (
+  fields: Pick<Entry, 'id' | 'text' | 'at' | 'startedAt' | 'status' | 'turnId'>,
+): Entry => ({
   ...fields,
   seconds: null,
   files: [],
@@ -99,7 +110,15 @@ const stepLabel = (entry: Entry) =>
 const firstLine = (text: string) => text.split('\n')[0] ?? ''
 
 const elapsedOf = (entry: Entry, current: number) =>
-  isRunning(entry) ? Math.max(0, Math.round((current - entry.at) / 1000)) : entry.seconds
+  isRunning(entry) ? Math.max(0, Math.round((current - entry.startedAt) / 1000)) : entry.seconds
+
+const startRunning = (entry: Entry, turnId: string | null, at: number): Entry => ({
+  ...entry,
+  status: 'running',
+  turnId,
+  startedAt: isRunning(entry) ? entry.startedAt : at,
+  seconds: null,
+})
 
 const escapeXml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -144,10 +163,22 @@ const trackSvg = (entry: Entry, width: number, text = stepLabel(entry)) => {
   )
 }
 
-const updateRunning = (list: Entry[], change: (entry: Entry) => Entry) => {
-  const target = latestRunning(list)
-  return target ? list.map(entry => (entry.id === target.id ? change(entry) : entry)) : list
-}
+const updateEntry = (list: Entry[], target: Entry | undefined, change: (entry: Entry) => Entry) =>
+  target ? list.map(entry => (entry.id === target.id ? change(entry) : entry)) : list
+
+const updateRunning = (list: Entry[], change: (entry: Entry) => Entry) =>
+  updateEntry(list, latestRunning(list), change)
+
+const TASK_ORDER: Record<TaskStatus, number> = { in_progress: 0, pending: 1, completed: 2 }
+
+// 残っているタスクを、手を付けているもの → 未着手の順に並べる
+const openTasks = (list: Task[]) =>
+  list
+    .filter(task => task.status !== 'completed')
+    .sort((a, b) => TASK_ORDER[a.status] - TASK_ORDER[b.status])
+
+const isTaskStatus = (value: unknown): value is TaskStatus =>
+  value === 'pending' || value === 'in_progress' || value === 'completed'
 
 const asSteps = (value: unknown) =>
   Array.isArray(value)
@@ -233,6 +264,7 @@ export const register: Register = on => {
             id: -(past.length - i),
             text,
             at: 0,
+            startedAt: 0,
             status: 'done',
             turnId: null,
           }),
@@ -241,7 +273,12 @@ export const register: Register = on => {
     } else {
       // 前の版が残した記録に、増えた項目の既定値を足す
       await update($, entries, list =>
-        list.map(entry => ({ ...entry, steps: entry.steps ?? [], done: entry.done ?? 0 })),
+        list.map(entry => ({
+          ...entry,
+          steps: entry.steps ?? [],
+          done: entry.done ?? 0,
+          startedAt: entry.startedAt ?? entry.at,
+        })),
       )
     }
 
@@ -276,12 +313,15 @@ export const register: Register = on => {
     }
 
     const at = await $.clock.now()
+    // 走っているターンの最中に打った指示は、自分の番が来るまで待ちにする
+    const queued = e.turnId !== undefined
     const entry = newEntry({
       id: at,
       text,
       at,
-      status: 'running',
-      turnId: e.turnId ?? null,
+      startedAt: queued ? 0 : at,
+      status: queued ? 'queued' : 'running',
+      turnId: null,
     })
     await update($, entries, list => [...list, entry].slice(-MAX_ENTRIES))
     await update($, now, () => at)
@@ -289,19 +329,28 @@ export const register: Register = on => {
     return next({ ...e, context: [...(e.context ?? []), PROGRESS_RULE] })
   })
 
-  // 作業中に打った指示は送信時点で走っていたターンの id を持つ。
-  // 割り込みでなく自分のターンで始まったものは、ここで本文を照らして付け替える
+  // 待ちの指示が自分のターンで始まったら、本文を照らして作業中に移す
   on('turn.start', async ($, e, next) => {
     const started = matchKey(e.text)
+    const at = await $.clock.now()
     await update($, entries, list => {
       // 同じ文面の指示が前にもあるので、照らすのは最新の1件だけ
-      const own =
+      const matched =
         started.length > 0
-          ? list.findLast(entry => entry.at > 0 && started.startsWith(matchKey(entry.text)))
+          ? list.findLast(
+              entry => entry.at > 0 && entry.turnId === null && started.startsWith(matchKey(entry.text)),
+            )
           : undefined
+      // 他のフックが本文を書き換えると照らせないので、何も走っていなければ最も古い待ちを始める
+      const own =
+        matched ?? (list.some(isRunning) ? undefined : list.find(isQueued))
       return list.map(entry => {
         if (entry.id === own?.id) {
-          return { ...entry, status: 'running', turnId: e.turnId, seconds: null }
+          return startRunning(entry, e.turnId, at)
+        }
+        // 待ちは送った順に進むので、追い越された待ちは取り込まれ済みとみなす
+        if (own && isQueued(entry) && entry.id < own.id) {
+          return { ...entry, status: 'done' as const }
         }
         if (isRunning(entry) && entry.turnId === null) {
           return { ...entry, turnId: e.turnId }
@@ -313,10 +362,25 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // 待ちの指示は、走っているターンに途中から取り込まれることもある
+  on('prompt.attachment', { type: 'queued_command' }, async ($, e, next) => {
+    const body = oneLine(e.text)
+    const at = await $.clock.now()
+    await update($, entries, list => {
+      const absorbed = list.find(entry => isQueued(entry) && body.includes(matchKey(entry.text)))
+      const turnId = latestRunning(list)?.turnId ?? null
+      return updateEntry(list, absorbed, entry => startRunning(entry, turnId, at))
+    })
+
+    return next(e)
+  })
+
   on('tool.call', { tool: PROGRESS_TOOL }, async ($, e) => {
     const plan = asSteps(e.plan)
     const done = typeof e.done === 'number' ? Math.floor(e.done) : null
-    const target = latestRunning(await read($, entries))
+    const list = await read($, entries)
+    // 段階の送り直しは今の指示に、done だけの申告は段階を持つ指示に付ける
+    const target = plan ? latestRunning(list) : focusRunning(list)
 
     if (!target) {
       return { result: '作業中の指示がないので、進捗は表示していません。' }
@@ -332,7 +396,7 @@ export const register: Register = on => {
 
     const nextDone = done ?? (plan ? 0 : target.done)
     await update($, entries, list =>
-      updateRunning(list, entry => ({ ...entry, steps, done: nextDone })),
+      updateEntry(list, target, entry => ({ ...entry, steps, done: nextDone })),
     )
 
     return { result: `進捗 ${nextDone}/${steps.length} を表示しました。` }
@@ -357,6 +421,53 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
+    const answer = await next(e)
+    if (e.agentId || !answer.result || answer.isError) return answer
+
+    const todos = answer.result.newTodos
+    await update($, tasks, () =>
+      todos.map((todo, i) => ({
+        id: `todo-${i}`,
+        subject: todo.content,
+        status: todo.status,
+      })),
+    )
+    return answer
+  })
+
+  on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const answer = await next(e)
+    if (e.agentId || !answer.result || answer.isError) return answer
+
+    const { id, subject } = answer.result.task
+    await update($, tasks, list => [
+      ...list.filter(task => task.id !== id),
+      { id, subject, status: 'pending' as const },
+    ])
+    return answer
+  })
+
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const answer = await next(e)
+    if (e.agentId || !answer.result || answer.isError || !answer.result.success) return answer
+
+    await update($, tasks, list =>
+      e.status === 'deleted'
+        ? list.filter(task => task.id !== e.taskId)
+        : list.map(task =>
+            task.id === e.taskId
+              ? {
+                  ...task,
+                  subject: e.subject ?? task.subject,
+                  status: isTaskStatus(e.status) ? e.status : task.status,
+                }
+              : task,
+          ),
+    )
+    return answer
+  })
+
   on('turn.complete', async ($, e, next) => {
     // サブエージェントのターンは指示の区切りではない
     if (e.agentId) return next(e)
@@ -366,11 +477,16 @@ export const register: Register = on => {
       e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'aborted' : 'error'
 
     await update($, entries, list =>
-      list.map(entry =>
-        isRunning(entry) && (entry.turnId === e.turnId || entry.turnId === null)
-          ? { ...entry, status, seconds: Math.round((at - entry.at) / 1000) }
-          : entry,
-      ),
+      list.map(entry => {
+        if (isRunning(entry) && (entry.turnId === e.turnId || entry.turnId === null)) {
+          return { ...entry, status, seconds: Math.round((at - entry.startedAt) / 1000) }
+        }
+        // 中断すると待ちの指示は入力欄へ戻り、走らない
+        if (isQueued(entry) && status === 'aborted') {
+          return { ...entry, status }
+        }
+        return entry
+      }),
     )
     await update($, now, () => at)
     await refreshPlace($)
@@ -385,19 +501,24 @@ export const register: Register = on => {
     const list = await read($, entries)
     const current = await read($, now)
     const where = await read($, place)
+    const remaining = openTasks(await read($, tasks))
     const columns = e.viewport?.columns ?? PANE_COLUMNS
     const finished = list.filter(entry => entry.status === 'done').length
     // 番号は全件の通し番号。新しい順に並べても、どの指示か言い合える
     const numbered = list.map((entry, i) => ({ entry, number: i + 1 })).slice(-PANE_LIMIT).reverse()
     const active = numbered.filter(({ entry }) => isRunning(entry))
-    const past = numbered.filter(({ entry }) => !isRunning(entry))
+    // 待ちは番が来る順(送った順)に並べる
+    const waiting = numbered.filter(({ entry }) => isQueued(entry)).reverse()
+    const past = numbered.filter(({ entry }) => !isRunning(entry) && !isQueued(entry))
 
     const meta = (entry: Entry, number: number) => {
       const seconds = elapsedOf(entry, current)
+      const order = isQueued(entry) ? waiting.findIndex(item => item.entry.id === entry.id) + 1 : 0
       return (
         <Text wrap="wrap">
           <Text color={toneOf(entry)} bold={isRunning(entry)}>
             {ICON[entry.status]} {STATUS_WORD[entry.status]}
+            {order > 0 ? ` ${order}番目` : ''}
           </Text>
           <Text dimColor>
             {` #${number} ・ ${clock(entry.at)}`}
@@ -407,6 +528,17 @@ export const register: Register = on => {
         </Text>
       )
     }
+
+    const stepRow = (key: string, state: 'past' | 'now' | 'later', label: string) => (
+      <Text wrap="wrap" key={key}>
+        <Text color={state === 'past' ? 'green' : state === 'now' ? 'yellow' : 'gray'}>
+          {state === 'past' ? '✓' : state === 'now' ? '▶' : '○'}
+        </Text>{' '}
+        <Text bold={state === 'now'} dimColor={state === 'later'} strikethrough={state === 'past'}>
+          {label}
+        </Text>
+      </Text>
+    )
 
     // 指示1件を1枚のカードにする。作業中は色付きの枠で、全文と段階の一覧まで見せる
     const card = (entry: Entry, number: number) => {
@@ -423,7 +555,7 @@ export const register: Register = on => {
           paddingX={1}
         >
           {meta(entry, number)}
-          <Text wrap="wrap" dimColor={!running}>
+          <Text wrap="wrap" dimColor={!running && !isQueued(entry)}>
             {entry.text}
           </Text>
           {running && entry.steps.length > 0 && (
@@ -442,19 +574,9 @@ export const register: Register = on => {
                   {` ${percent(entry)}%`}
                 </Text>
               )}
-              {entry.steps.map((step, i) => {
-                const state = i < entry.done ? 'past' : i === entry.done ? 'now' : 'later'
-                return (
-                  <Text wrap="wrap" key={`${entry.id}-step-${i}`}>
-                    <Text color={state === 'past' ? 'green' : state === 'now' ? 'yellow' : 'gray'}>
-                      {state === 'past' ? '✓' : state === 'now' ? '▶' : '○'}
-                    </Text>{' '}
-                    <Text bold={state === 'now'} dimColor={state === 'later'} strikethrough={state === 'past'}>
-                      {step}
-                    </Text>
-                  </Text>
-                )
-              })}
+              {entry.steps.map((step, i) =>
+                stepRow(`${entry.id}-step-${i}`, i < entry.done ? 'past' : i === entry.done ? 'now' : 'later', step),
+              )}
             </Box>
           )}
         </Box>
@@ -473,11 +595,22 @@ export const register: Register = on => {
           <Text dimColor>
             {`  完了 ${finished}`}
             {active.length > 0 ? ` ・ 作業中 ${active.length}` : ''}
+            {waiting.length > 0 ? ` ・ 待ち ${waiting.length}` : ''}
           </Text>
         </Text>
         {list.length === 0 && <Text dimColor>まだ指示はありません。</Text>}
         {active.map(({ entry, number }) => card(entry, number))}
-        {past.length > 0 && active.length > 0 && <Text dimColor>これまで</Text>}
+        {remaining.length > 0 && (
+          <Box flexDirection="column">
+            <Text bold>タスク 残り{remaining.length}</Text>
+            {remaining.map(task =>
+              stepRow(`task-${task.id}`, task.status === 'in_progress' ? 'now' : 'later', task.subject),
+            )}
+          </Box>
+        )}
+        {waiting.length > 0 && <Text dimColor>待ち</Text>}
+        {waiting.map(({ entry, number }) => card(entry, number))}
+        {past.length > 0 && active.length + waiting.length > 0 && <Text dimColor>これまで</Text>}
         {past.map(({ entry, number }) => card(entry, number))}
       </Box>
     )
@@ -485,7 +618,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, entries)
-    const target = latestRunning(list)
+    const target = focusRunning(list)
+    const waitCount = list.filter(isQueued).length
 
     if (e.props.hasSurvey || !target) {
       return next(e)
@@ -505,7 +639,10 @@ export const register: Register = on => {
         <Text color="yellow">▶</Text>
         <Text wrap="truncate-end">{title}</Text>
         <Box flexGrow={1} />
-        <Text dimColor>作業中 {duration(seconds)}</Text>
+        <Text dimColor>
+          作業中 {duration(seconds)}
+          {waitCount > 0 ? ` ・ 待ち ${waitCount}` : ''}
+        </Text>
       </Box>
     )
 
