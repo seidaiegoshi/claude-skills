@@ -13,6 +13,10 @@
     /* 本文の行長。rem 固定なので文字サイズの違う本文どうしでも右端が揃う（em だと要素ごとにずれる）。
        日本語で1行40字前後。折り返し位置が要素ごとに動くと、それだけで読みにくくなる */
     --measure: 38rem;
+    /* visual-explanation の lightbox.html が SVG の下地に使う。未定義だと白に落ち、ダークで図の文字が消える */
+    --surface: var(--card);
+    /* ラベル列の幅。「現状の動作」(5字)が1行に収まる幅。.field と .opt で共有して左端を1本に揃える */
+    --lblw: 4.2rem;
     --body: "Hiragino Kaku Gothic ProN", "Yu Gothic", YuGothic, "Noto Sans JP", system-ui, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
@@ -71,19 +75,44 @@
   .dec[data-sev="high"] .badge { background: var(--high); }
 
   /* ラベルは左の列に固定し、本文は必ず同じ位置から始める。ラベルだけが --muted で、本文は --ink-2 */
-  .field { display: grid; grid-template-columns: 3.6rem 1fr; gap: 0 0.75rem; align-items: start; }
+  .field { display: grid; grid-template-columns: var(--lblw) 1fr; gap: 0 0.75rem; align-items: start; }
   .lbl { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); padding-top: 0.32rem; white-space: nowrap; }
   .dec .ctx { font-size: 0.95rem; line-height: 1.75; color: var(--ink-2); }
   /* 行頭記号を置かない。ぶら下げインデントを入れると、この列の文字だけ他の本文より右にずれる。
      箇条書きであることは行間で示す。ul の UA 既定 padding-left(40px)を消さないと、前提の本文
      だけ背景・具体例より右にずれ、field 列で揃えたはずの左端が崩れる */
-  .dec ul.premise { list-style: none; margin: 0; padding: 0; max-width: var(--measure); display: flex; flex-direction: column; gap: 0.7rem; font-size: 0.95rem; line-height: 1.75; color: var(--ink-2); }
+  .dec ul.facts { list-style: none; margin: 0; padding: 0; max-width: var(--measure); display: flex; flex-direction: column; gap: 0.7rem; font-size: 0.95rem; line-height: 1.75; color: var(--ink-2); }
+  /* 現状の動作は判断の起点なので、前提（補足の事実）より濃く出す */
+  .dec ul.facts[data-kind="現状"] { color: var(--ink); }
+  /* 各行の右端に「違う」を置く。本文は左の列に収め、行ごとの開始位置を動かさない */
+  .dec ul.facts > li { display: grid; grid-template-columns: 1fr auto; gap: 0.3rem 0.6rem; align-items: start; }
+  .flag { position: relative; display: inline-flex; align-items: center; margin-top: 0.25rem; padding: 0.05rem 0.5rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; line-height: 1.6; color: var(--muted); background: var(--card); border: 1px solid var(--rule); border-radius: 2px; cursor: pointer; white-space: nowrap; }
+  /* チェックボックス本体は隠し、ラベル全体をボタンに見せる（1rem 未満の四角は押しにくい） */
+  .flag input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .flag:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .flag:hover { border-color: var(--ink-2); color: var(--ink-2); }
+  .flag:has(input:checked) { color: var(--card); background: var(--crit); border-color: var(--crit); }
+  /* 「違う」を付けた行は取り消し線で示す。色だけに頼らず形でも区別する */
+  .dec ul.facts > li.is-wrong .ftext { text-decoration: line-through; text-decoration-color: var(--crit); text-decoration-thickness: 1.5px; }
+  /* display:block が [hidden] に勝つので、閉じた訂正欄は明示的に消す */
+  .fnote[hidden] { display: none; }
+  .fnote { grid-column: 1 / -1; display: block; box-sizing: border-box; width: 100%; font: inherit; font-size: 0.9rem; line-height: 1.7; color: var(--ink); background: var(--card); border: 1px solid var(--crit); border-radius: 2px; padding: 0.35rem 0.6rem; resize: none; overflow: hidden; text-decoration: none; }
+
+  /* 見た目の比較。現状と各案を同じ行・同じ幅で並べ、違いを見比べられるようにする。
+     画像は元の縦横比のまま縮める（揃えたいなら撮る範囲を揃える。ここで切り抜くと違いが消えうる） */
+  .looks { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.7rem; max-width: var(--measure); margin: 0; }
+  .look { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+  .look img, .look svg { display: block; width: 100%; height: auto; border: 1px solid var(--rule); background: var(--card); }
+  .look figcaption { font-size: 0.8rem; font-weight: 700; line-height: 1.5; color: var(--ink-2); }
+  /* SVG 見本の中で、案どうしで違う部分だけを囲む印 */
+  .look .hl { fill: none; stroke: var(--accent); stroke-width: 3; }
+
   /* 「操作 → 結果」のシナリオは前提の事実とは役割が違うので、独立したラベル行に出して濃くする */
   .dec .scenario { color: var(--ink); }
 
-  /* 左列を .field と同じ 3.6rem にして、ラジオを右端に寄せる。読む本文と選ぶ本文の開始位置が
+  /* 左列を .field と同じ --lblw にして、ラジオを右端に寄せる。読む本文と選ぶ本文の開始位置が
      カードを通して1本に揃い、視線の縦のラインが2種類にならない */
-  .opt { display: grid; grid-template-columns: 3.6rem 1fr; gap: 0 0.75rem; padding: 0.8rem 1rem; border-bottom: 1px solid var(--rule-soft); align-items: start; cursor: pointer; }
+  .opt { display: grid; grid-template-columns: var(--lblw) 1fr; gap: 0 0.75rem; padding: 0.8rem 1rem; border-bottom: 1px solid var(--rule-soft); align-items: start; cursor: pointer; }
   /* hover で地を変えると「読む地／選ぶ地」の塗り分けが崩れるので、左バーの太さだけで応える */
   .opt:hover { box-shadow: inset 3px 0 0 var(--rule); }
   .opt input[type="radio"] { justify-self: end; margin: 0.28rem 0 0; width: 1.15rem; height: 1.15rem; accent-color: var(--accent); }
@@ -96,6 +125,8 @@
   .opt .odesc { display: block; max-width: var(--measure); font-size: 0.9rem; line-height: 1.7; color: var(--ink-2); margin-top: 0.15rem; }
   /* 推奨理由は推奨案の行の中に置く。「なぜ推すか」は推す対象の隣にあるべきで、
      カード末尾の帯に切り出すと、どの案の話か読み手が戻って確かめることになる */
+  /* 動作に関わる論点では、各案で「現状の動作と同じ操作をしたらどうなるか」を書く */
+  .opt .obeh { display: block; max-width: var(--measure); font-size: 0.9rem; line-height: 1.7; color: var(--ink); margin-top: 0.45rem; }
   .opt .owhy { display: block; max-width: var(--measure); font-size: 0.88rem; line-height: 1.7; color: var(--ink-2); margin-top: 0.45rem; }
   /* ラベルを行内に置くと、その1行目だけ文章の開始位置が右にずれる。独立した行にする */
   .opt .olbl { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
@@ -127,8 +158,12 @@
   /* 埋める対象が無いときは押せない。押してから回答行で「何も変わらなかった」と気づくのを避ける */
   #fill-rec-btn:disabled { color: var(--muted); border-color: var(--rule-soft); cursor: default; }
   #copy-btn { color: var(--card); background: var(--ink); border: 0; }
+  /* 送れる表示では主ボタン。送れない表示では隠し、コピーを主にする（押せないボタンを並べない） */
+  #send-btn { color: var(--card); background: var(--accent); border: 0; }
+  #send-btn:disabled { color: var(--muted); background: var(--fill); cursor: default; }
+  #send-status { flex-basis: 100%; font-size: 0.8rem; color: var(--ink-2); }
 
-  /* 狭い画面ではラベル列を畳む。3.6rem を残すと本文が1行3〜4字になって読めない。
+  /* 狭い画面ではラベル列を畳む。ラベル列を残すと本文が1行3〜4字になって読めない。
      選択肢はラジオぶんだけ残す（畳むとラジオと文が縦に並んで押しどころが分からなくなる） */
   @media (max-width: 34rem) {
     .field { grid-template-columns: 1fr; gap: 0.1rem 0; }
@@ -154,9 +189,17 @@
          論点の ID は数字、選択肢は大文字。回答行が「1(スラッグ)=A」になり、論点番号と回答が
          数字どうしで並ばない。data-sev は crit / high / med。影響の大きい順に並べ ID もその順。
          推奨は先頭に置くが checked にしない（未選択=スキップ）。タイトルは疑問文。
-         背景・前提・推奨理由は .field + .lbl のラベル列に載せる（ラベルだけが淡色）。
+         背景・現状の動作・前提・見た目は .field + .lbl のラベル列に載せる（ラベルだけが淡色）。
          バッジは ID の直後（左端に「1 致命」が揃うと、拾い読みで重要度を追える）。
-         選択肢は role="radiogroup" + aria-labelledby でタイトルに結ぶ（読み上げで論点が分かる） -->
+         選択肢は role="radiogroup" + aria-labelledby でタイトルに結ぶ（読み上げで論点が分かる）。
+
+         ul.facts の li は本文だけを書く。「違う」トグルと訂正欄は JS が各行に足し、
+         回答行に「現状1-1=違う(…)」「前提1-2=違う(…)」として出す（番号は data-kind + ID + 行順）。
+
+         このカードは「動作に関わる論点」の形: 現状の動作 → 各案の「この案での動作」を同じ操作で書く。
+         動作に関わらない論点（方針・命名・構成の選択など）は、現状の動作と「この案での動作」を省き、
+         代わりに <span class="lbl">具体例</span> の行（この判断が問われる場面を1文）を置く。
+         見た目の欄は画面の見た目が変わる論点だけに置く -->
     <div class="dec" data-id="1" data-slug="<短いスラッグ>" data-sev="crit">
       <div class="top">
         <div class="idrow"><span class="did">1</span><span class="badge">致命</span><span class="dtitle" id="dtitle-1"><疑問文の論点タイトル（〜するか?）></span></div>
@@ -165,25 +208,38 @@
           <p class="ctx"><何の仕組みの話かを、チャット未読でも通じる日常語で1〜2文。専門語はここで一言説明></p>
         </div>
         <div class="field">
-          <span class="lbl">前提</span>
-          <ul class="premise">
-            <li><1行1事実の単文。証拠は行末に <code>ファイル:行</code>></li>
-            <li><事実2。カード内で説明していない略語・相対参照は使わない></li>
+          <span class="lbl">現状の動作</span>
+          <ul class="facts" data-kind="現状">
+            <li><使う人がする操作と、今そのとき起きる結果を1文で（「〜で〜すると、〜になる」）。確かめた方法を行末に <code>実画面で確認</code> / <code>ファイル:行</code>></li>
+            <li><結果がもう1段あるなら次の1文（「その後〜を開くと、〜のまま」）></li>
           </ul>
         </div>
         <div class="field">
-          <span class="lbl">具体例</span>
-          <p class="ctx scenario"><「操作 → 結果」の具体シナリオ1文。不具合の無い選択形の論点では「この判断が問われる場面」></p>
+          <span class="lbl">前提</span>
+          <ul class="facts" data-kind="前提">
+            <li><動作以外の事実（制約・決定済みの方針・実測値）を1行1事実の単文で。証拠は行末に <code>ファイル:行</code>></li>
+          </ul>
+        </div>
+        <div class="field">
+          <span class="lbl">見た目</span>
+          <div class="looks">
+            <!-- 現状は実画面のキャプチャ（visual-explanation の embed.sh の出力 <img data-zoom …> をここに） -->
+            <figure class="look"><figcaption>現状</figcaption></figure>
+            <!-- 案は、案を当てた画面のキャプチャか、実際の配色・部品で描いた SVG。SVG なら figure に data-zoom を付け、
+                 違う部分だけを <rect class="hl"> で囲む。実物から作れないときは figcaption に「（イメージ）」と書く -->
+            <figure class="look" data-zoom><svg viewBox="0 0 320 200" role="img" aria-label="<案Aの見本>"></svg><figcaption>A. <推奨案></figcaption></figure>
+            <figure class="look" data-zoom><svg viewBox="0 0 320 200" role="img" aria-label="<案Bの見本>"></svg><figcaption>B. <対案></figcaption></figure>
+          </div>
         </div>
       </div>
       <div role="radiogroup" aria-labelledby="dtitle-1">
         <label class="opt">
           <input type="radio" name="1" value="A" class="rec">
-          <span><span class="oname">A. <推奨案><span class="rectag">推奨</span></span><span class="odesc"><選んだ場合に何が起きるか></span><span class="owhy"><span class="olbl">推奨理由</span><1〜2文></span></span>
+          <span><span class="oname">A. <推奨案><span class="rectag">推奨</span></span><span class="odesc"><選んだ場合に何が起きるか（手間・影響範囲）></span><span class="obeh"><span class="olbl">この案での動作</span><現状の動作と同じ操作をすると、どうなるか></span><span class="owhy"><span class="olbl">推奨理由</span><1〜2文></span></span>
         </label>
         <label class="opt">
           <input type="radio" name="1" value="B">
-          <span><span class="oname">B. <対案></span><span class="odesc"><トレードオフ></span></span>
+          <span><span class="oname">B. <対案></span><span class="odesc"><トレードオフ></span><span class="obeh"><span class="olbl">この案での動作</span><同じ操作をすると、どうなるか></span></span>
         </label>
         <label class="opt other">
           <input type="radio" name="1" value="OTHER">
@@ -215,23 +271,59 @@
     <span id="count"></span>
     <button id="fill-rec-btn" type="button">残りを推奨で埋める</button>
     <button id="copy-btn" type="button">コピー</button>
+    <button id="send-btn" type="button" hidden>Claude に送る</button>
+    <span id="send-status" hidden></span>
   </div>
 
 </div>
 
 <script>
+  // 選択肢のラジオだけを拾う。「違う」のチェックボックスを数えると、事実の訂正が決定に化ける
+  const radio = (id, extra = "") => `input[type="radio"][name="${id}"]${extra}`;
+
+  // ul.facts の各行に「違う」トグルと訂正欄を足す。番号は「現状1-1」「前提1-2」（種類 + 論点 ID + 行順）
+  document.querySelectorAll(".dec[data-id] ul.facts").forEach((ul) => {
+    const id = ul.closest(".dec").dataset.id;
+    [...ul.children].forEach((li, i) => {
+      const fid = `${ul.dataset.kind}${id}-${i + 1}`;
+      li.dataset.fid = fid;
+      const text = document.createElement("span");
+      text.className = "ftext";
+      text.append(...li.childNodes);
+      const flag = document.createElement("label");
+      flag.className = "flag";
+      flag.innerHTML = `<input type="checkbox" class="flag-cb" aria-label="${fid} は違う">違う`;
+      const note = document.createElement("textarea");
+      note.className = "fnote";
+      note.rows = 1;
+      note.placeholder = "実際はどうか（任意）";
+      note.hidden = true;
+      li.append(text, flag, note);
+    });
+  });
+
+  // 「違う」を付けた行を、訂正文つきで拾う
+  function factFlags(card) {
+    return [...card.querySelectorAll("ul.facts > li.is-wrong")].map((li) => {
+      const note = li.querySelector(".fnote").value.replace(/\s+/g, " ").trim();
+      return `${li.dataset.fid}=違う${note ? `(${note})` : ""}`;
+    });
+  }
+
   // 回答行の生成: 判断カードの data-id / data-slug と name=ID の対応が前提。未選択=スキップ。
+  // 事実の訂正はその論点の直後に続ける（どの論点の前提が崩れたか、貼られた行だけで分かる）
   function buildAnswerLine() {
     return [...document.querySelectorAll(".dec[data-id]")].map((card) => {
       const id = card.dataset.id;
       const slug = card.dataset.slug;
-      const sel = card.querySelector(`input[name="${id}"]:checked`);
-      if (!sel) return `${id}(${slug})=スキップ`;
-      if (sel.value === "OTHER") {
+      const sel = card.querySelector(radio(id, ":checked"));
+      let token;
+      if (!sel) token = `${id}(${slug})=スキップ`;
+      else if (sel.value === "OTHER") {
         const text = (card.querySelector(`.other-text[data-for="${id}"]`)?.value ?? "").replace(/\s+/g, " ").trim();
-        return `${id}(${slug})=その他(${text || "未記入"})`;
-      }
-      return `${id}(${slug})=${sel.value}`;
+        token = `${id}(${slug})=その他(${text || "未記入"})`;
+      } else token = `${id}(${slug})=${sel.value}`;
+      return [token, ...factFlags(card)].join(" ");
     }).join(" ");
   }
 
@@ -244,46 +336,62 @@
   const line = document.getElementById("answer-line");
   const count = document.getElementById("count");
   const fillBtn = document.getElementById("fill-rec-btn");
+  const cards = () => [...document.querySelectorAll(".dec[data-id]")];
+  const decided = (c) => !!c.querySelector(radio(c.dataset.id, ":checked"));
+  // 事実に「違う」が付いた論点は推奨で埋めない。前提が崩れていれば推奨も変わりうる
+  const fillable = (c) => !decided(c) && !c.querySelector("ul.facts > li.is-wrong");
   // スキップは「今回は決めない」という有効な回答なので、未回答としては数えない。
   // 「0件 回答済み」だと全件スキップが未着手に見え、催促しない方針と表示が食い違う。
   function sync() {
     line.textContent = buildAnswerLine();
-    const cards = [...document.querySelectorAll(".dec[data-id]")];
-    const done = cards.filter((c) => c.querySelector(`input[name="${c.dataset.id}"]:checked`)).length;
-    const skipped = cards.length - done;
+    const all = cards();
+    const done = all.filter(decided).length;
+    const skipped = all.length - done;
+    const flags = document.querySelectorAll("ul.facts > li.is-wrong").length;
+    let text;
     if (done === 0) {
       // 補足は .hint に分けておく。狭い画面ではここだけ畳んで、バーの行数を増やさない
-      count.innerHTML = `${cards.length}件ともスキップ<span class="hint">（このまま返すと全件見送り）</span>`;
+      text = `${all.length}件ともスキップ<span class="hint">（このまま返すと全件見送り）</span>`;
     } else if (skipped === 0) {
-      count.textContent = `${cards.length}件とも決定`;
+      text = `${all.length}件とも決定`;
     } else {
-      count.textContent = `決定 ${done}件 ・ スキップ ${skipped}件`;
+      text = `決定 ${done}件 ・ スキップ ${skipped}件`;
     }
+    // 訂正は決定/スキップとは別の軸なので、件数を混ぜずに並べる
+    count.innerHTML = flags ? `${text} ・ 訂正 ${flags}件` : text;
     // 押す前に何件に効くかを見せる。押してから回答行で確かめる往復を省く
-    fillBtn.textContent = skipped ? `残りの${skipped}件を推奨で埋める` : "残りを推奨で埋める";
-    fillBtn.disabled = skipped === 0;
+    const n = all.filter(fillable).length;
+    fillBtn.textContent = n ? `残りの${n}件を推奨で埋める` : "残りを推奨で埋める";
+    fillBtn.disabled = n === 0;
   }
   document.addEventListener("input", (e) => {
     // 自由記述に入力し始めたら「その他」を自動選択する
     if (e.target.classList?.contains("other-text")) {
       autoGrow(e.target);
-      const id = e.target.dataset.for;
-      const radio = document.querySelector(`input[name="${id}"][value="OTHER"]`);
-      if (radio) radio.checked = true;
+      const radioEl = document.querySelector(radio(e.target.dataset.for, '[value="OTHER"]'));
+      if (radioEl) radioEl.checked = true;
     }
+    if (e.target.classList?.contains("fnote")) autoGrow(e.target);
+    sync();
+  });
+  document.addEventListener("change", (e) => {
+    if (!e.target.classList?.contains("flag-cb")) return;
+    const li = e.target.closest("li");
+    const note = li.querySelector(".fnote");
+    li.classList.toggle("is-wrong", e.target.checked);
+    note.hidden = !e.target.checked;
+    // 訂正欄は開いた瞬間に書き始められるようにする。外したら書きかけは回答行から消える（本文は残す）
+    if (e.target.checked) { autoGrow(note); note.focus(); }
     sync();
   });
   document.querySelectorAll(".other-text").forEach(autoGrow);
   sync();
 
-  // 未選択のカードだけ推奨（class="rec"）を選択する。選択済み・スキップ以外の意思表示は上書きしない
+  // 推奨で埋められる論点だけ推奨（class="rec"）を選択する。選択済み・訂正付きの論点は上書きしない
   fillBtn.addEventListener("click", () => {
-    document.querySelectorAll(".dec[data-id]").forEach((card) => {
-      const id = card.dataset.id;
-      if (!card.querySelector(`input[name="${id}"]:checked`)) {
-        const rec = card.querySelector(`input[name="${id}"].rec`);
-        if (rec) rec.checked = true;
-      }
+    cards().filter(fillable).forEach((card) => {
+      const rec = card.querySelector(radio(card.dataset.id, ".rec"));
+      if (rec) rec.checked = true;
     });
     sync();
   });
@@ -307,4 +415,41 @@
     }
     setTimeout(() => { e.target.textContent = "コピー"; }, 2000);
   });
+
+  // 「Claude に送る」: 回答行を回答バーへのコメントとして投稿し、判断書を公開したセッションへ届ける。
+  // 公開時に capabilities: {comments: {}} を宣言したときだけ動く。使えない表示ではボタンを出さず、コピーに任せる
+  const sendBtn = document.getElementById("send-btn");
+  const sendStatus = document.getElementById("send-status");
+  const say = (text) => { sendStatus.textContent = text; sendStatus.hidden = !text; };
+  let comments = null;
+  // 送れるかは読み込み後に変わる（受け取るセッションの接続は非同期）ので、表示のたびに確かめ直す
+  async function refreshSend() {
+    if (!comments) return;
+    let state;
+    try { state = await comments.canSendToClaude(); } catch { state = "off"; }
+    sendBtn.hidden = state === "off";
+    sendBtn.disabled = state !== "available";
+    say({ available: "", writers_only: "編集できる人だけが Claude に送れます。コピーして貼ってください。", no_session: "受け取れる Claude のセッションがありません。コピーして貼ってください。" }[state] ?? "");
+  }
+  (async () => {
+    comments = (await window.claude?.use?.("comments")) ?? null;
+    await refreshSend();
+  })();
+  sendBtn.addEventListener("click", async () => {
+    sendBtn.disabled = true;
+    say("送信中…（初回は、このページがあなたの名前でコメントしてよいかの確認が出ます）");
+    try {
+      const anchor = await comments.anchorFor(line);
+      await comments.sendToClaude({ anchor, text: "判断書の回答: " + line.textContent });
+      say("送りました。返事はこのページのコメント欄に届きます。");
+    } catch (e) {
+      const why = { consent_required: "許可されなかったため送っていません。", forbidden: "このページからはコメントできない設定です。", claude_unavailable: "Claude に届けられなかったため、何も投稿していません。", rate_limited: "続けて送ったため止めました。少し待ってください。" }[e?.code] ?? "";
+      // 先に状態を取り直してから理由を出す（逆だと、取り直しで理由の表示が消える）
+      await refreshSend();
+      say(`送れませんでした。${why}コピーして貼ってください。`);
+    }
+  });
 </script>
+
+<!-- 見た目の欄に画像・SVG を置いたら、visual-explanation の references/lightbox.html をこの下に貼る
+     （クリックで拡大。縮小版だけでは違いが読めない） -->
