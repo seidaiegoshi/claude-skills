@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Entry, EntryStatus, Place, Task, TaskStatus } from '../types'
+import type { Commit, CommitState, Entry, EntryStatus, Place, Task, TaskStatus } from '../types'
 
 const PANE = 'session-log'
 const TITLE = '指示の履歴'
@@ -17,6 +17,7 @@ const entries = atom({ plugin: 'session-log', key: 'entries' } as const, [])
 const now = atom({ plugin: 'session-log', key: 'now' } as const, 0)
 const place = atom({ plugin: 'session-log', key: 'place' } as const, null)
 const tasks = atom({ plugin: 'session-log', key: 'tasks' } as const, [])
+const lastHead = atom({ plugin: 'session-log', key: 'lastHead' } as const, null)
 
 const ICON: Record<EntryStatus, string> = {
   queued: '…',
@@ -92,6 +93,7 @@ const newEntry = (
   files: [],
   steps: [],
   done: 0,
+  commits: [],
 })
 
 const bar = (done: number, total: number, cells = BAR_CELLS) => {
@@ -187,6 +189,30 @@ const asSteps = (value: unknown) =>
 
 const basename = (path: string) => path.replace(/\/+$/, '').split('/').pop() ?? path
 
+const COMMIT_COLOR: Record<CommitState, string> = {
+  branch: 'yellow',
+  merged: 'cyan',
+  pushed: 'green',
+  gone: 'gray',
+}
+
+const commitWord = (state: CommitState, base: string) =>
+  ({
+    branch: '未マージ',
+    merged: `${base}にマージ済み`,
+    pushed: `${base}にマージ・push済み`,
+    gone: '書き換え済み',
+  })[state]
+
+// 例: 「未コミット 3 ・ develop へ未マージ 2」。何も無ければ空
+const gitSummary = (where: Place) =>
+  [
+    where.dirty > 0 ? `未コミット ${where.dirty}` : null,
+    where.base && where.ahead > 0 ? `${where.base} へ未マージ ${where.ahead}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ・ ')
+
 // 例: 「local / develop」「local / 45-pane-width / worktree」。作業ブランチに付く claude/ は省く
 const placeLine = (where: Place) =>
   [
@@ -197,9 +223,96 @@ const placeLine = (where: Place) =>
     .filter(Boolean)
     .join(' / ')
 
-async function gitLine($: EngineInterface, args: string[]) {
-  const ran = await $.process.run(['git', ...args], { timeoutMs: 5000 })
+async function gitLine($: EngineInterface, args: string[], cwd?: string) {
+  const ran = await $.process.run(['git', ...args], { timeoutMs: 5000, ...(cwd ? { cwd } : {}) })
   return ran.exitCode === 0 ? ran.stdout.trim() || null : null
+}
+
+const lines = (text: string | null) => (text ? text.split('\n').filter(line => line !== '') : [])
+
+// マージ先は origin/HEAD が指すブランチ。設定の無いリポジトリでは よくある名前を探す
+async function baseBranch($: EngineInterface, root: string) {
+  const remoteHead = await gitLine($, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], root)
+  if (remoteHead) return remoteHead.replace(/^origin\//, '')
+  for (const name of ['develop', 'main', 'master']) {
+    if (await gitLine($, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], root)) return name
+  }
+  return null
+}
+
+// ワークツリーは作業の締めで消えるので、判定はメインの作業ツリーで行う
+async function commitState($: EngineInterface, root: string, base: string, sha: string) {
+  const holders = lines(
+    await gitLine($, ['branch', '-a', '--contains', sha, '--format=%(refname:short)'], root),
+  )
+  if (holders.includes(`origin/${base}`)) return 'pushed'
+  if (holders.includes(base)) return 'merged'
+  return holders.length > 0 ? 'branch' : 'gone'
+}
+
+// push まで届いたコミットはそれ以上動かないので見直さない
+async function refreshCommits($: EngineInterface) {
+  const repo = await $.session.repo()
+  const base = repo ? await baseBranch($, repo.root) : null
+  if (!repo || !base) return
+
+  const list = await read($, entries)
+  const states = new Map<string, CommitState>()
+  for (const commit of list.flatMap(entry => entry.commits)) {
+    if (commit.state !== 'pushed' && !states.has(commit.sha)) {
+      states.set(commit.sha, await commitState($, repo.root, base, commit.sha))
+    }
+  }
+  if (states.size === 0) return
+
+  await update($, entries, current =>
+    current.map(entry =>
+      entry.commits.some(commit => states.has(commit.sha))
+        ? {
+            ...entry,
+            commits: entry.commits.map(commit => ({
+              ...commit,
+              state: states.get(commit.sha) ?? commit.state,
+            })),
+          }
+        : entry,
+    ),
+  )
+}
+
+const readHead = ($: EngineInterface) => gitLine($, ['rev-parse', 'HEAD'])
+
+// 前に見た HEAD から増えたコミットを、いま作業中の指示に付ける。
+// 基点ブランチを取り込んだときに相手側のコミットまで付けないよう、第1親だけたどる
+async function collectCommits($: EngineInterface) {
+  const head = await readHead($)
+  const last = await read($, lastHead)
+  if (!head || head === last) return
+
+  await update($, lastHead, () => head)
+  if (!last) return
+
+  const found: Commit[] = lines(await gitLine($, ['log', '--reverse', '--first-parent', '--format=%H%x09%s', `${last}..${head}`])).map(
+    line => {
+      const [sha = '', ...subject] = line.split('\t')
+      return { sha, subject: subject.join('\t'), state: 'branch' }
+    },
+  )
+  if (found.length === 0) return
+
+  await update($, entries, list =>
+    updateEntry(list, focusRunning(list) ?? list.at(-1), entry => ({
+      ...entry,
+      commits: [...entry.commits, ...found.filter(c => !entry.commits.some(known => known.sha === c.sha))],
+    })),
+  )
+}
+
+// どちらも取れなくても履歴と進捗の表示は続ける
+async function refreshGit($: EngineInterface) {
+  await collectCommits($).catch(() => {})
+  await refreshCommits($).catch(() => {})
+  await refreshPlace($)
 }
 
 // ブランチは指示のたびに切り替わりうるので毎回取り直す
@@ -214,15 +327,22 @@ async function refreshPlace($: EngineInterface) {
 async function readPlace($: EngineInterface) {
   const repo = await $.session.repo()
   const top = await gitLine($, ['rev-parse', '--show-toplevel'])
+  const branch = await gitLine($, ['branch', '--show-current'])
+  const base = repo ? await baseBranch($, repo.root) : null
+  const ahead =
+    base && branch && branch !== base ? Number(await gitLine($, ['rev-list', '--count', `${base}..HEAD`])) || 0 : 0
   const where: Place = {
     // クラウドでは CLAUDE_CODE_REMOTE が立つ
     isCloud: (await $.env.get('CLAUDE_CODE_REMOTE')) === 'true',
     repo: repo ? basename(repo.root) : null,
-    branch: await gitLine($, ['branch', '--show-current']),
+    branch,
     worktree: repo && top && top !== repo.root ? basename(top) : null,
+    base,
+    dirty: lines(await gitLine($, ['status', '--porcelain'])).length,
+    ahead,
   }
   await update($, place, () => where)
-  $.ui.status(placeLine(where))
+  $.ui.status([placeLine(where), gitSummary(where)].filter(Boolean).join(' ・ '))
 }
 
 export const register: Register = on => {
@@ -278,6 +398,7 @@ export const register: Register = on => {
           steps: entry.steps ?? [],
           done: entry.done ?? 0,
           startedAt: entry.startedAt ?? entry.at,
+          commits: entry.commits ?? [],
         })),
       )
     }
@@ -331,6 +452,9 @@ export const register: Register = on => {
 
   // 待ちの指示が自分のターンで始まったら、本文を照らして作業中に移す
   on('turn.start', async ($, e, next) => {
+    // 指示の外(人の手元)で増えたコミットは拾わないよう、ターンの頭で HEAD を取り直す
+    const head = await readHead($).catch(() => null)
+    if (head) await update($, lastHead, () => head)
     const started = matchKey(e.text)
     const at = await $.clock.now()
     await update($, entries, list => {
@@ -421,6 +545,15 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // 作業の締めはコミットのあとワークツリーごと消すので、ターンの終わりを待たず git のたびに拾う
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const answer = await next(e)
+    if (/\bgit\b/.test(e.command)) {
+      await refreshGit($)
+    }
+    return answer
+  })
+
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const answer = await next(e)
     if (e.agentId || !answer.result || answer.isError) return answer
@@ -472,6 +605,8 @@ export const register: Register = on => {
     // サブエージェントのターンは指示の区切りではない
     if (e.agentId) return next(e)
 
+    // 作業中のうちに拾わないと、増えたコミットが次の待ちの指示に付いてしまう
+    await refreshGit($)
     const at = await $.clock.now()
     const status: EntryStatus =
       e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'aborted' : 'error'
@@ -489,7 +624,6 @@ export const register: Register = on => {
       }),
     )
     await update($, now, () => at)
-    await refreshPlace($)
 
     return next(e)
   })
@@ -524,6 +658,7 @@ export const register: Register = on => {
             {` #${number} ・ ${clock(entry.at)}`}
             {seconds === null ? '' : ` ・ ${duration(seconds)}`}
             {entry.files.length > 0 ? ` ・ ファイル${entry.files.length}` : ''}
+            {entry.commits.length > 0 ? ` ・ コミット${entry.commits.length}` : ''}
           </Text>
         </Text>
       )
@@ -558,6 +693,18 @@ export const register: Register = on => {
           <Text wrap="wrap" dimColor={!running && !isQueued(entry)}>
             {entry.text}
           </Text>
+          {entry.commits.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              {entry.commits.map(commit => (
+                <Text wrap="wrap" key={`${entry.id}-commit-${commit.sha}`}>
+                  <Text color={COMMIT_COLOR[commit.state]}>● {commitWord(commit.state, where?.base ?? '基点')}</Text>
+                  <Text dimColor={commit.state === 'gone'} strikethrough={commit.state === 'gone'}>
+                    {` ${commit.sha.slice(0, 7)} ${commit.subject}`}
+                  </Text>
+                </Text>
+              ))}
+            </Box>
+          )}
           {running && entry.steps.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               {Svg ? (
@@ -588,6 +735,7 @@ export const register: Register = on => {
         {where && (
           <Text wrap="wrap" color={where.isCloud ? 'cyan' : undefined} dimColor={!where.isCloud}>
             {placeLine(where)}
+            {gitSummary(where) ? <Text color="yellow">{`  ${gitSummary(where)}`}</Text> : ''}
           </Text>
         )}
         <Text bold>

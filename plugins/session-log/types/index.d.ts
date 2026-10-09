@@ -15,6 +15,18 @@ export type Entry = {
   // モデルが progress ツールで申告した段階の一覧と、終えた段階の数
   steps: string[]
   done: number
+  // この指示のあいだに増えたコミット
+  commits: Commit[]
+}
+
+// branch: 作業ブランチにだけある / merged: 基点ブランチへマージ済み(未push) /
+// pushed: origin の基点ブランチまで届いた / gone: 書き換えや削除でどのブランチにも残っていない
+export type CommitState = 'branch' | 'merged' | 'pushed' | 'gone'
+
+export type Commit = {
+  sha: string
+  subject: string
+  state: CommitState
 }
 
 // モデルが TaskCreate / TodoWrite で立てたタスク。セッションを通して持ち越す
@@ -33,10 +45,22 @@ export type Place = {
   branch: string | null
   // メインの作業ツリーでないときだけ、そのフォルダ名
   worktree: string | null
+  // マージ先とみなすブランチ(origin/HEAD が指す先)。分からなければ null
+  base: string | null
+  // 未コミットのファイル数と、基点ブランチに無いコミットの数
+  dirty: number
+  ahead: number
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    'session-log': { entries: Entry[]; now: number; place: Place | null; tasks: Task[] }
+    'session-log': {
+      entries: Entry[]
+      now: number
+      place: Place | null
+      tasks: Task[]
+      // 最後に見た HEAD。ここから先に増えたコミットを指示に付ける
+      lastHead: string | null
+    }
   }
 }
