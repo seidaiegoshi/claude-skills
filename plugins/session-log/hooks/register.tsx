@@ -18,6 +18,14 @@ const now = atom({ plugin: 'session-log', key: 'now' } as const, 0)
 const place = atom({ plugin: 'session-log', key: 'place' } as const, null)
 const tasks = atom({ plugin: 'session-log', key: 'tasks' } as const, [])
 const lastHead = atom({ plugin: 'session-log', key: 'lastHead' } as const, null)
+const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null)
+
+const TITLE_MODEL = 'haiku'
+const TITLE_HISTORY = 8
+const TITLE_RULE =
+  'Claude Code のセッションに、いま何に取り組んでいてどこまで進んだかが一目で分かるタイトルを付ける。' +
+  '30字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
+  '内容は直近の指示の流れから読み取り、Issue 番号があれば #番号 を頭に付ける。状態は渡された段階をもとに短く書く。'
 
 const ICON: Record<EntryStatus, string> = {
   queued: '…',
@@ -101,8 +109,6 @@ const bar = (done: number, total: number, cells = BAR_CELLS) => {
   return { filled: '█'.repeat(filled), rest: '░'.repeat(cells - filled) }
 }
 
-const percent = (entry: Entry) => Math.round((entry.done / entry.steps.length) * 100)
-
 // 終えた段階の次を「いまの段階」とみなす
 const currentStep = (entry: Entry) => entry.steps[entry.done] ?? '仕上げ'
 
@@ -110,6 +116,33 @@ const stepLabel = (entry: Entry) =>
   `${Math.min(entry.done + 1, entry.steps.length)}/${entry.steps.length} ${currentStep(entry)}`
 
 const firstLine = (text: string) => text.split('\n')[0] ?? ''
+
+type Meter = { done: number; total: number; label: string; tone: 'running' | 'done' | 'stopped' }
+
+// 段階の申告が無い作業も1段のバーにして、帯にいつもバーを出す
+const meterOf = (entry: Entry): Meter => {
+  const total = entry.steps.length
+  if (isRunning(entry) || isQueued(entry)) {
+    return total > 0
+      ? { done: entry.done, total, label: stepLabel(entry), tone: 'running' }
+      : { done: 0, total: 1, label: '段階なし', tone: 'running' }
+  }
+  // 最後の done を送らずに終えることがあるので、完了した作業は満たす
+  if (entry.status === 'done') {
+    return total > 0
+      ? { done: total, total, label: `${total}/${total} 完了`, tone: 'done' }
+      : { done: 1, total: 1, label: '完了', tone: 'done' }
+  }
+  return { done: entry.done, total: Math.max(total, 1), label: STATUS_WORD[entry.status], tone: 'stopped' }
+}
+
+const percent = (meter: Meter) => Math.round((meter.done / meter.total) * 100)
+
+const METER_FILL: Record<Meter['tone'], string> = { running: AMBER, done: '#16A34A', stopped: '#8A8780' }
+const METER_COLOR: Record<Meter['tone'], string> = { running: 'yellow', done: 'green', stopped: 'gray' }
+
+// 帯に出すのは作業中の指示、無ければ最後に終わった指示
+const bandTarget = (list: Entry[]) => focusRunning(list) ?? list.findLast(entry => !isQueued(entry))
 
 const elapsedOf = (entry: Entry, current: number) =>
   isRunning(entry) ? Math.max(0, Math.round((current - entry.startedAt) / 1000)) : entry.seconds
@@ -137,13 +170,13 @@ const fitText = (text: string, size: number, room: number) => {
 }
 
 // plan-progress に倣い、溝の上を塗りが進み、先頭のカプセルにいまの段階を書く
-const trackSvg = (entry: Entry, width: number, text = stepLabel(entry)) => {
-  const total = entry.steps.length
-  const fx = (entry.done / total) * width
+const trackSvg = (meter: Meter, width: number, text = meter.label) => {
+  const { total } = meter
+  const color = METER_FILL[meter.tone]
+  const fx = (meter.done / total) * width
   const r = TRACK_H / 2
-  const marks = entry.steps
-    .slice(1)
-    .map((_, i) => {
+  const marks = Array.from({ length: total - 1 }, (_, i) => i)
+    .map(i => {
       const x = ((i + 1) / total) * width
       const passed = x < fx - 1
       return `<circle cx="${x.toFixed(1)}" cy="${r}" r="1.6" fill="${passed ? '#FFFFFF' : '#A8A69E'}" opacity="${passed ? 0.85 : 0.6}"/>`
@@ -152,14 +185,14 @@ const trackSvg = (entry: Entry, width: number, text = stepLabel(entry)) => {
   const label = fitText(text, 11, width - 20)
   const pillW = Math.min(width, textWidth(label, 11) + 20)
   const pillX = Math.max(0, Math.min(width - pillW, fx - pillW / 2))
-  const fill = fx > 0 ? `<rect width="${Math.max(fx, TRACK_H).toFixed(1)}" height="${TRACK_H}" rx="${r}" fill="${AMBER}" opacity="0.45"/>` : ''
+  const fill = fx > 0 ? `<rect width="${Math.max(fx, TRACK_H).toFixed(1)}" height="${TRACK_H}" rx="${r}" fill="${color}" opacity="0.45"/>` : ''
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${TRACK_H}" viewBox="0 0 ${width} ${TRACK_H}">` +
     `<rect width="${width}" height="${TRACK_H}" rx="${r}" fill="#808080" opacity="0.18"/>` +
     fill +
     marks +
-    `<rect x="${pillX.toFixed(1)}" width="${pillW.toFixed(1)}" height="${TRACK_H}" rx="${r}" fill="${AMBER}"/>` +
+    `<rect x="${pillX.toFixed(1)}" width="${pillW.toFixed(1)}" height="${TRACK_H}" rx="${r}" fill="${color}"/>` +
     `<text x="${(pillX + pillW / 2).toFixed(1)}" y="${r + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="#FFFFFF">${escapeXml(label)}</text>` +
     '</svg>'
   )
@@ -354,6 +387,54 @@ async function readPlace($: EngineInterface) {
   $.ui.status([placeLine(where), gitSummary(where)].filter(Boolean).join(' ・ '))
 }
 
+const titlePrompt = (list: Entry[], target: Entry, where: Place | null) =>
+  [
+    where?.branch ? `ブランチ: ${branchLabel(where.branch)}` : null,
+    '直近の指示(古い順、最後が作業中):',
+    ...list.slice(-TITLE_HISTORY).map(entry => `- ${oneLine(entry.text).slice(0, 150)}`),
+    !isRunning(target)
+      ? `状態: 指示の作業を${STATUS_WORD[target.status]}で終え、次の指示を待っている`
+      : target.steps.length > 0
+        ? `段階: ${target.steps.map((step, i) => `${i < target.done ? '✓' : i === target.done ? '▶' : '○'}${step}`).join(' ')}`
+        : '段階: 着手したところ',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+// 前置きや括弧を付けて返すことがあるので、1行目の中身だけを残す
+const cleanTitle = (text: string) =>
+  firstLine(text.trim())
+    .replace(/^(タイトル|title)\s*[:：]\s*/i, '')
+    .replace(/^[「『"']+|[」』"']+$/g, '')
+    .trim()
+    .slice(0, 40)
+
+// 返事を待つ間に次の付け直しが始まったら、遅れた返事は捨てる
+let titleRequest = 0
+
+async function refreshTitle($: EngineInterface) {
+  const request = ++titleRequest
+  const list = await read($, entries)
+  const target = bandTarget(list)
+  if (!target) return
+
+  const reply = await $.model
+    .complete({
+      model: TITLE_MODEL,
+      system: TITLE_RULE,
+      prompt: titlePrompt(list, target, await read($, place)),
+      maxTokens: 80,
+      effort: 'low',
+      timeoutMs: 15000,
+    })
+    .catch(() => null)
+  const title = reply?.isAnswered ? cleanTitle(reply.text) : ''
+  if (request !== titleRequest) return
+
+  // 付けられなかったときは、前の指示のタイトルを残さず指示の1行目に戻す
+  await update($, sessionTitle, () => title || null)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -491,6 +572,10 @@ export const register: Register = on => {
         return entry
       })
     })
+    // サブエージェントのターンでは付け直さない。ターンを待たせないよう返事は待たない
+    if (focusRunning(await read($, entries))?.turnId === e.turnId) {
+      void refreshTitle($)
+    }
 
     return next(e)
   })
@@ -531,6 +616,7 @@ export const register: Register = on => {
     await update($, entries, list =>
       updateEntry(list, target, entry => ({ ...entry, steps, done: nextDone })),
     )
+    void refreshTitle($)
 
     return { result: `進捗 ${nextDone}/${steps.length} を表示しました。` }
   })
@@ -633,6 +719,10 @@ export const register: Register = on => {
       }),
     )
     await update($, now, () => at)
+    // 待ちが続くなら次のターンの頭で付け直すので、待機に入るときだけ終わった状態を反映する
+    if (!(await read($, entries)).some(entry => isRunning(entry) || isQueued(entry))) {
+      void refreshTitle($)
+    }
 
     return next(e)
   })
@@ -718,8 +808,8 @@ export const register: Register = on => {
             <Box flexDirection="column" marginTop={1}>
               {Svg ? (
                 <Svg
-                  source={trackSvg(entry, inner * 8, `${percent(entry)}%`)}
-                  alt={`進捗 ${percent(entry)}%`}
+                  source={trackSvg(meterOf(entry), inner * 8, `${percent(meterOf(entry))}%`)}
+                  alt={`進捗 ${percent(meterOf(entry))}%`}
                   width={inner * 8}
                   height={TRACK_H}
                 />
@@ -727,7 +817,7 @@ export const register: Register = on => {
                 <Text>
                   <Text color="yellow">{meter.filled}</Text>
                   <Text dimColor>{meter.rest}</Text>
-                  {` ${percent(entry)}%`}
+                  {` ${percent(meterOf(entry))}%`}
                 </Text>
               )}
               {entry.steps.map((step, i) =>
@@ -775,7 +865,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, entries)
-    const target = focusRunning(list)
+    const target = bandTarget(list)
     const waitCount = list.filter(isQueued).length
 
     if (e.props.hasSurvey || !target) {
@@ -786,31 +876,29 @@ export const register: Register = on => {
     const { Box, Text } = parts
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
-    const seconds = elapsedOf(target, await read($, now)) ?? 0
-    const hasProgress = target.steps.length > 0
-    const title = firstLine(target.text)
+    const running = isRunning(target)
+    const seconds = elapsedOf(target, await read($, now))
+    const title = (await read($, sessionTitle)) ?? firstLine(target.text)
+    const meter = meterOf(target)
 
-    // 1行目は指示と経過時間だけにして、指示が進捗バーに押し出されないようにする
+    // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする
     const titleRow = (
       <Box flexDirection="row" gap={1}>
-        <Text color="yellow">▶</Text>
+        <Text color={running ? 'yellow' : METER_COLOR[meter.tone]}>{ICON[target.status]}</Text>
         <Text wrap="truncate-end">{title}</Text>
         <Box flexGrow={1} />
         <Text dimColor>
-          作業中 {duration(seconds)}
+          {STATUS_WORD[target.status]}
+          {seconds === null ? '' : ` ${duration(seconds)}`}
           {waitCount > 0 ? ` ・ 待ち ${waitCount}` : ''}
         </Text>
       </Box>
     )
 
-    if (!hasProgress) {
-      return titleRow
-    }
-
     // デスクトップは1桁がおよそ8px。割合のぶんを引いた残りを全部バーに充てる
     const total = Math.max(320, (e.props.bodyColumns || 100) * 8)
     const trackWidth = Math.max(160, Math.min(1600, total - 60))
-    const meter = bar(target.done, target.steps.length, Math.max(10, Math.min(40, (e.props.bodyColumns || 100) - 40)))
+    const cells = bar(meter.done, meter.total, Math.max(10, Math.min(40, (e.props.bodyColumns || 100) - 40)))
 
     return (
       <Box flexDirection="column">
@@ -818,20 +906,20 @@ export const register: Register = on => {
         <Box flexDirection="row" alignItems="center" gap={1}>
           {Svg ? (
             <Svg
-              source={trackSvg(target, trackWidth)}
-              alt={`進捗 ${stepLabel(target)}`}
+              source={trackSvg(meter, trackWidth)}
+              alt={`進捗 ${meter.label}`}
               width={trackWidth}
               height={TRACK_H}
             />
           ) : (
             <Text wrap="truncate-end">
-              <Text color="yellow">{meter.filled}</Text>
-              <Text dimColor>{meter.rest}</Text>
-              <Text color="yellow"> {stepLabel(target)}</Text>
+              <Text color={METER_COLOR[meter.tone]}>{cells.filled}</Text>
+              <Text dimColor>{cells.rest}</Text>
+              <Text color={METER_COLOR[meter.tone]}> {meter.label}</Text>
             </Text>
           )}
           <Box flexGrow={1} />
-          <Text dimColor>{String(percent(target)).padStart(3, ' ')}%</Text>
+          <Text dimColor>{String(percent(meter)).padStart(3, ' ')}%</Text>
         </Box>
       </Box>
     )

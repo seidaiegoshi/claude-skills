@@ -36,3 +36,15 @@ export const paneText = async ($: Engine, surface: 'terminal' | 'desktop' = 'ter
   await ui.unmount()
   return texts.join('\n')
 }
+
+export const bandText = async ($: Engine) => {
+  const ui = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100 },
+  } as never)
+  const texts = (await ui.findAll({ type: 'Text' })).map(element => element.text)
+  await ui.unmount()
+  return texts.join('\n')
+}

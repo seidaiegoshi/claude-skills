@@ -61,6 +61,8 @@ declare module 'claude-code' {
       tasks: Task[]
       // 最後に見た HEAD。ここから先に増えたコミットを指示に付ける
       lastHead: string | null
+      // Haiku が付けたセッションの内容と状態のタイトル。まだ無ければ null
+      title: string | null
     }
   }
 }
