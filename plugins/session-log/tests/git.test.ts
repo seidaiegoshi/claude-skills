@@ -10,13 +10,14 @@ type FakeRepo = {
   holders: Record<string, string[]>
   dirty: string[]
   ahead: number
+  branch: string
 }
 
 const sha = (n: number) => `${String(n).repeat(7)}${'0'.repeat(33)}`
 
 // git の呼び出しを手元の偽リポジトリで答える。メインの作業ツリーは /repo、ワークツリーは /repo-wt
 const fakeGit = (on: On) => {
-  const repo: FakeRepo = { history: [{ sha: sha(1), subject: '始まり' }], holders: {}, dirty: [], ahead: 0 }
+  const repo: FakeRepo = { history: [{ sha: sha(1), subject: '始まり' }], holders: {}, dirty: [], ahead: 0, branch: 'claude/1-work' }
   const head = () => repo.history.at(-1)?.sha ?? ''
   const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
@@ -27,7 +28,7 @@ const fakeGit = (on: On) => {
     const command = args.join(' ')
     if (command === 'rev-parse HEAD') return answer(head())
     if (command === 'rev-parse --show-toplevel') return answer('/repo-wt')
-    if (command === 'branch --show-current') return answer('claude/1-work')
+    if (command === 'branch --show-current') return answer(repo.branch)
     if (command === 'symbolic-ref --short refs/remotes/origin/HEAD') return answer('origin/develop')
     if (command === 'status --porcelain') return answer(repo.dirty.join('\n'))
     if (command.startsWith('rev-list --count')) return answer(String(repo.ahead))
@@ -149,5 +150,35 @@ describe('作業のコミットとマージ状況', () => {
     await complete($, 't1', 'answer')
 
     expect(await paneText($)).toMatch(/未コミット 2 ・ develop へ未マージ 1/)
+  })
+
+  test('Issue 番号入りのブランチは、見出しとステータスラインに番号を #付きで出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.branch = 'claude/116-manifest-print'
+    const statuses: (string | undefined)[] = []
+    on('ui.status', (_$, e) => {
+      statuses.push(e.text)
+      return { value: undefined }
+    })
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect(await paneText($)).toMatch(/#116 manifest-print/)
+    expect(statuses.at(-1)).toMatch(/^local \/ #116 manifest-print \/ worktree/)
+  })
+
+  test('番号の無いブランチは、これまでどおり名前だけ出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.branch = 'claude/dispatch-flags-separation-a15081'
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect((await paneText($)).split('\n')[0]).toBe('local / dispatch-flags-separation-a15081 / worktree')
   })
 })

@@ -213,11 +213,20 @@ const gitSummary = (where: Place) =>
     .filter(Boolean)
     .join(' ・ ')
 
-// 例: 「local / develop」「local / 45-pane-width / worktree」。作業ブランチに付く claude/ は省く
+// /start-issue が切る <接頭辞>/<番号>-<スラッグ> の形だけを Issue に紐づくブランチとみなす
+const ISSUE_BRANCH = /^(?:[^/]+\/)?(\d+)-(.+)$/
+
+// 例: 「#45 pane-width」「develop」。作業ブランチに付く claude/ は省く
+const branchLabel = (branch: string) => {
+  const issue = ISSUE_BRANCH.exec(branch)
+  return issue ? `#${issue[1]} ${issue[2]}` : branch.replace(/^claude\//, '')
+}
+
+// 例: 「local / develop」「local / #45 pane-width / worktree」
 const placeLine = (where: Place) =>
   [
     where.isCloud ? 'cloud' : 'local',
-    where.branch?.replace(/^claude\//, ''),
+    where.branch ? branchLabel(where.branch) : null,
     where.worktree ? 'worktree' : null,
   ]
     .filter(Boolean)
