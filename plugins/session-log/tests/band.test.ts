@@ -56,3 +56,49 @@ describe('入力欄の上の帯の進捗バー', () => {
     expect(shown).toMatch(/ 25%/)
   })
 })
+
+describe('帯を押してペインを開け閉めする', () => {
+  const mountBand = ($: Parameters<typeof bandText>[0], surface: 'terminal' | 'desktop') =>
+    $.ui.mount({
+      plugin: 'session-log',
+      surface,
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100 },
+    } as never)
+
+  // テストのエンジンはペインを持たないので、開いている id だけを覚える偽の実装を置く
+  const fakePanes = (on: Parameters<typeof setup>[0]) => {
+    const open = new Set<string>()
+    on('ui.panes', () => ({
+      value: [...open].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true as const })),
+    }))
+    on('ui.open', (_$, e) => {
+      open.add(e.id)
+      return { value: { isPlaced: true as const } }
+    })
+    on('ui.close', (_$, e) => {
+      open.delete(e.id)
+      return { value: undefined }
+    })
+    return open
+  }
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`${surface}: ペインは帯を押すまで開かず、押すと開き、もう一度押すと閉じる`, async ($, on) => {
+      const clock = setup(on)
+      const open = fakePanes(on)
+
+      await submit($, clock, '文言を直して')
+      await $.turn.start({ text: '文言を直して', turnId: 't1' })
+      expect(open.has('session-log')).toBe(false)
+
+      const band = await mountBand($, surface)
+      await band.press({ key: 'session-log' })
+      expect(open.has('session-log')).toBe(true)
+
+      await band.press({ key: 'session-log' })
+      expect(open.has('session-log')).toBe(false)
+      await band.unmount()
+    })
+  }
+})

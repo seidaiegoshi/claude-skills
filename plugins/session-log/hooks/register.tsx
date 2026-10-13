@@ -412,6 +412,14 @@ const cleanTitle = (text: string) =>
 // 返事を待つ間に次の付け直しが始まったら、遅れた返事は捨てる
 let titleRequest = 0
 
+const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
+
+// ペインは開きっぱなしにせず、帯を押したときだけ出し、もう一度押すと閉じる
+async function togglePane($: EngineInterface) {
+  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+  await (isOpen ? $.ui.close({ id: PANE }) : openPane($))
+}
+
 async function refreshTitle($: EngineInterface) {
   const request = ++titleRequest
   const list = await read($, entries)
@@ -504,13 +512,11 @@ export const register: Register = on => {
       }
     })
 
-    void $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
-
     return next(e)
   })
 
   on('command.run', { command: 'session-log' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
+    await openPane($)
 
     return { text: '指示の履歴を開きました。' }
   })
@@ -873,7 +879,7 @@ export const register: Register = on => {
     }
 
     const parts = $.ui.resolve(e)
-    const { Box, Text } = parts
+    const { Box, Text, Button } = parts
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
     const running = isRunning(target)
@@ -884,8 +890,10 @@ export const register: Register = on => {
     // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする
     const titleRow = (
       <Box flexDirection="row" gap={1}>
-        <Text color={running ? 'yellow' : METER_COLOR[meter.tone]}>{ICON[target.status]}</Text>
-        <Text wrap="truncate-end">{title}</Text>
+        <Button key={PANE} plain onPress={() => void togglePane($)}>
+          <Text color={running ? 'yellow' : METER_COLOR[meter.tone]}>{ICON[target.status]}</Text>
+          <Text wrap="truncate-end">{` ${title}`}</Text>
+        </Button>
         <Box flexGrow={1} />
         <Text dimColor>
           {STATUS_WORD[target.status]}
