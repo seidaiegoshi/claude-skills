@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Commit, CommitState, Entry, EntryStatus, Place, Task, TaskStatus } from '../types'
+import type { Commit, CommitState, Entry, EntryStatus, GitOp, GitOpKind, Place, Task, TaskStatus } from '../types'
 
 const PANE = 'session-log'
 const TITLE = '指示の履歴'
@@ -22,6 +22,7 @@ const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null
 
 const TITLE_MODEL = 'haiku'
 const TITLE_HISTORY = 8
+const BACKFILL = 5
 const TITLE_RULE =
   'Claude Code のセッションに、いま何に取り組んでいてどこまで進んだかが一目で分かるタイトルを付ける。' +
   '30字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
@@ -84,7 +85,7 @@ const isRunning = (entry: Entry) => entry.status === 'running'
 const isQueued = (entry: Entry) => entry.status === 'queued'
 
 // 色は作業中と待ちだけに付け、終わった指示は状態を問わずグレーにする
-const toneOf = (entry: Entry) => (isRunning(entry) ? 'yellow' : isQueued(entry) ? 'blue' : 'gray')
+const toneOf = (entry: Entry) => (isRunning(entry) ? 'blue' : isQueued(entry) ? 'yellow' : 'gray')
 
 const latestRunning = (list: Entry[]) => list.findLast(isRunning)
 
@@ -102,6 +103,9 @@ const newEntry = (
   steps: [],
   done: 0,
   commits: [],
+  gitOps: [],
+  ask: null,
+  summary: null,
 })
 
 const bar = (done: number, total: number, cells = BAR_CELLS) => {
@@ -170,7 +174,7 @@ const fitText = (text: string, size: number, room: number) => {
 }
 
 // plan-progress に倣い、溝の上を塗りが進み、先頭のカプセルにいまの段階を書く
-const trackSvg = (meter: Meter, width: number, text = meter.label) => {
+const trackSvg = (meter: Meter, width: number) => {
   const { total } = meter
   const color = METER_FILL[meter.tone]
   const fx = (meter.done / total) * width
@@ -182,7 +186,7 @@ const trackSvg = (meter: Meter, width: number, text = meter.label) => {
       return `<circle cx="${x.toFixed(1)}" cy="${r}" r="1.6" fill="${passed ? '#FFFFFF' : '#A8A69E'}" opacity="${passed ? 0.85 : 0.6}"/>`
     })
     .join('')
-  const label = fitText(text, 11, width - 20)
+  const label = fitText(meter.label, 11, width - 20)
   const pillW = Math.min(width, textWidth(label, 11) + 20)
   const pillX = Math.max(0, Math.min(width - pillW, fx - pillW / 2))
   const fill = fx > 0 ? `<rect width="${Math.max(fx, TRACK_H).toFixed(1)}" height="${TRACK_H}" rx="${r}" fill="${color}" opacity="0.45"/>` : ''
@@ -322,6 +326,110 @@ async function refreshCommits($: EngineInterface) {
   )
 }
 
+const GIT_OP_WORD: Record<GitOpKind, string> = {
+  commit: 'コミット',
+  merge: 'マージ',
+  rebase: 'リベース',
+  'cherry-pick': 'cherry-pick',
+  reset: 'リセット',
+  push: 'push',
+  pull: 'pull',
+  branch: 'ブランチ作成',
+  'branch-delete': 'ブランチ削除',
+  worktree: 'ワークツリー作成',
+  'worktree-remove': 'ワークツリー削除',
+  tag: 'タグ',
+  'pr-create': 'PR作成',
+  'pr-merge': 'PRマージ',
+  'pr-close': 'PRクローズ',
+}
+
+// 引用符の中の空白では切らない。$(...) や heredoc までは解かない
+const tokenize = (segment: string) =>
+  [...segment.matchAll(/"((?:\\.|[^"\\])*)"|'([^']*)'|(\S+)/g)].map(m => m[1] ?? m[2] ?? m[3] ?? '')
+
+// 値を取るオプション。これらの次の語は相手(ブランチ名など)として数えない
+const VALUE_FLAGS = new Set(['-m', '-F', '-s', '-X', '--strategy', '--onto', '-b', '-B', '-c', '-C', '--title', '--body', '-t', '-T'])
+
+const positionals = (args: string[]) =>
+  args.filter((arg, i) => !arg.startsWith('-') && !VALUE_FLAGS.has(args[i - 1] ?? ''))
+
+const has = (args: string[], ...flags: string[]) => args.some(arg => flags.includes(arg))
+
+const op = (kind: GitOpKind, label: string, sha: string | null = null): GitOp => ({ kind, label, sha })
+
+// git commit の出力の1行目「[ブランチ 短いsha] 件名」
+const COMMIT_LINE = /^\[[^\]]*?\s([0-9a-f]{7,40})\] (.+)$/m
+const PR_URL = /\/pull\/(\d+)/
+
+const gitOpOf = (args: string[], stdout: string): GitOp | null => {
+    let i = 0
+  while (i < args.length && args[i]?.startsWith('-')) i += args[i] === '-C' || args[i] === '-c' ? 2 : 1
+  const [sub, ...rest] = args.slice(i)
+  const names = positionals(rest)
+  const target = names.join(' ')
+  const force = has(rest, '-f', '--force', '--force-with-lease') ? ' (force)' : ''
+
+  if (has(rest, '--abort', '--quit', '--dry-run')) return null
+  switch (sub) {
+    case 'commit': {
+      const made = COMMIT_LINE.exec(stdout)
+      return made ? op('commit', made[2] ?? '', made[1] ?? null) : null
+    }
+    case 'merge':
+      return op('merge', target)
+    case 'rebase':
+      return op('rebase', has(rest, '--continue') ? '続行' : target)
+    case 'cherry-pick':
+      return op('cherry-pick', target)
+    case 'reset':
+      return has(rest, '--hard') ? op('reset', target || 'HEAD') : null
+    case 'push':
+      return has(rest, '-d', '--delete') ? op('branch-delete', target) : op('push', `${target}${force}`.trim())
+    case 'pull':
+      return op('pull', target)
+    case 'checkout':
+    case 'switch': {
+      const at = rest.findIndex(arg => ['-b', '-B', '-c', '-C'].includes(arg))
+      return at >= 0 ? op('branch', rest[at + 1] ?? '') : null
+    }
+    case 'branch':
+      if (has(rest, '-d', '-D', '--delete')) return op('branch-delete', target)
+      return names.length > 0 && !has(rest, '--list', '-l', '-a', '-r', '-v', '-vv', '--contains', '--merged', '--no-merged', '--show-current') ? op('branch', names[0] ?? '') : null
+    case 'worktree':
+      if (names[0] === 'add') return op('worktree', basename(names[1] ?? ''))
+      if (names[0] === 'remove') return op('worktree-remove', basename(names[1] ?? ''))
+      return null
+    case 'tag':
+      return names.length > 0 && !has(rest, '-l', '--list', '-d') ? op('tag', names[0] ?? '') : null
+    default:
+      return null
+  }
+}
+
+const ghOpOf = (args: string[], stdout: string): GitOp | null => {
+  const [area, action, ...rest] = args
+  if (area !== 'pr') return null
+  const number = positionals(rest)[0]?.match(PR_URL)?.[1] ?? positionals(rest)[0]
+  const label = number ? `#${number.replace(/^#/, '')}` : ''
+  if (action === 'create') {
+    const made = PR_URL.exec(stdout)
+    return op('pr-create', made ? `#${made[1]}` : '')
+  }
+  if (action === 'merge') return op('pr-merge', label)
+  if (action === 'close') return op('pr-close', label)
+  return null
+}
+
+// cd や && で繋いだ1行から git / gh の操作を拾う。git の出力は最後の操作のものとみなす
+const gitOpsOf = (command: string, stdout: string): GitOp[] =>
+  command
+    .split(/&&|\|\||;|\||\n/)
+    .map(segment => tokenize(segment.trim()))
+    .map(tokens => tokens.slice(tokens.findIndex(token => !/^[A-Z_][A-Z0-9_]*=/.test(token))))
+    .map(([tool, ...args]) => (tool === 'git' ? gitOpOf(args, stdout) : tool === 'gh' ? ghOpOf(args, stdout) : null))
+    .filter((found): found is GitOp => found !== null)
+
 const readHead = ($: EngineInterface) => gitLine($, ['rev-parse', 'HEAD'])
 
 // 前に見た HEAD から増えたコミットを、いま作業中の指示に付ける。
@@ -443,6 +551,53 @@ async function refreshTitle($: EngineInterface) {
   await update($, sessionTitle, () => title || null)
 }
 
+const SUMMARY_RULE =
+  'Claude Code で人が出した指示と、それに対してやった作業を、あとで履歴を見返す人のために要約する。' +
+  '次の2行だけを返す。\n指示: 指示の要点(40字以内)\n作業: 実際にやったことと結果(80字以内。終わっていない点があれば含める)'
+
+const gitOpText = (found: GitOp) => `${GIT_OP_WORD[found.kind]} ${found.label}`.trim()
+
+const summaryPrompt = (entry: Entry, answer: string) =>
+  [
+    `指示:\n${entry.text.slice(0, 1500)}`,
+    `作業の終わりの返答:\n${answer.slice(0, 3000) || '(なし)'}`,
+    entry.files.length > 0 ? `変えたファイル: ${entry.files.map(basename).join(', ')}` : null,
+    entry.commits.length > 0 ? `コミット: ${entry.commits.map(commit => commit.subject).join(' / ')}` : null,
+    entry.gitOps.length > 0 ? `git の操作: ${entry.gitOps.map(gitOpText).join(' / ')}` : null,
+    `状態: ${STATUS_WORD[entry.status]}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+const pickLine = (text: string, head: string) =>
+  new RegExp(`^\\s*${head}\\s*[:：]\\s*(.+)$`, 'm').exec(text)?.[1]?.trim() || null
+
+// answers は指示の id から、その作業の終わりの返答へ
+async function summarize($: EngineInterface, answers: Map<number, string>) {
+  for (const entry of (await read($, entries)).filter(item => answers.has(item.id))) {
+    const answer = answers.get(entry.id) ?? ''
+    if (!answer && entry.files.length === 0 && entry.gitOps.length === 0) continue
+
+    const reply = await $.model
+      .complete({
+        model: TITLE_MODEL,
+        system: SUMMARY_RULE,
+        prompt: summaryPrompt(entry, answer),
+        maxTokens: 300,
+        effort: 'low',
+        timeoutMs: 20000,
+      })
+      .catch(() => null)
+    const ask = reply?.isAnswered ? pickLine(reply.text, '指示') : null
+    const summary = reply?.isAnswered ? pickLine(reply.text, '作業') : null
+    if (!ask && !summary) continue
+
+    await update($, entries, list =>
+      updateEntry(list, entry, item => ({ ...item, ask: ask ?? item.ask, summary: summary ?? item.summary })),
+    )
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -472,22 +627,31 @@ export const register: Register = on => {
     const known = await read($, entries)
     if (known.length === 0) {
       // 再開したセッションや途中から読み込んだときは、過去の指示を完了扱いで埋める
-      const past = (await $.session.messages())
-        .filter(m => m.role === 'user' && !m.toolResults?.length)
-        .map(m => tidy(stripTags(m.text)))
-        .filter(text => text.length > 0)
-      await update($, entries, () =>
-        past.slice(-MAX_ENTRIES).map((text, i) =>
-          newEntry({
-            id: -(past.length - i),
-            text,
-            at: 0,
-            startedAt: 0,
-            status: 'done',
-            turnId: null,
-          }),
-        ),
-      )
+      // 指示ごとに、次の指示までの最後の返答を作業の結果として持っておく
+      const past: { text: string; answer: string }[] = []
+      for (const m of await $.session.messages()) {
+        const last = past.at(-1)
+        if (m.role === 'user' && !m.toolResults?.length) {
+          const text = tidy(stripTags(m.text))
+          if (text.length > 0) past.push({ text, answer: '' })
+        } else if (m.role === 'assistant' && m.text.trim() && last) {
+          last.answer = m.text
+        }
+      }
+      const filled = past.slice(-MAX_ENTRIES).map((item, i, list) => ({
+        ...item,
+        entry: newEntry({
+          id: -(list.length - i),
+          text: item.text,
+          at: 0,
+          startedAt: 0,
+          status: 'done',
+          turnId: null,
+        }),
+      }))
+      await update($, entries, () => filled.map(item => item.entry))
+      // Haiku を呼びすぎないよう、要約は直近の数件だけ付ける
+      void summarize($, new Map(filled.slice(-BACKFILL).map(item => [item.entry.id, item.answer])))
     } else {
       // 前の版が残した記録に、増えた項目の既定値を足す
       await update($, entries, list =>
@@ -497,6 +661,9 @@ export const register: Register = on => {
           done: entry.done ?? 0,
           startedAt: entry.startedAt ?? entry.at,
           commits: entry.commits ?? [],
+          gitOps: entry.gitOps ?? [],
+          ask: entry.ask ?? null,
+          summary: entry.summary ?? null,
         })),
       )
     }
@@ -649,9 +816,18 @@ export const register: Register = on => {
   // 作業の締めはコミットのあとワークツリーごと消すので、ターンの終わりを待たず git のたびに拾う
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const answer = await next(e)
-    if (/\bgit\b/.test(e.command)) {
-      await refreshGit($)
+    if (!/\b(git|gh)\b/.test(e.command)) return answer
+
+    const found = answer.result && !answer.isError ? gitOpsOf(e.command, answer.result.stdout) : []
+    if (found.length > 0) {
+      await update($, entries, list =>
+        updateEntry(list, focusRunning(list) ?? list.at(-1), entry => ({
+          ...entry,
+          gitOps: [...entry.gitOps, ...found],
+        })),
+      )
     }
+    await refreshGit($)
     return answer
   })
 
@@ -712,9 +888,14 @@ export const register: Register = on => {
     const status: EntryStatus =
       e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'aborted' : 'error'
 
+    const finished = new Set(
+      (await read($, entries))
+        .filter(entry => isRunning(entry) && (entry.turnId === e.turnId || entry.turnId === null))
+        .map(entry => entry.id),
+    )
     await update($, entries, list =>
       list.map(entry => {
-        if (isRunning(entry) && (entry.turnId === e.turnId || entry.turnId === null)) {
+        if (finished.has(entry.id)) {
           return { ...entry, status, seconds: Math.round((at - entry.startedAt) / 1000) }
         }
         // 中断すると待ちの指示は入力欄へ戻り、走らない
@@ -729,19 +910,17 @@ export const register: Register = on => {
     if (!(await read($, entries)).some(entry => isRunning(entry) || isQueued(entry))) {
       void refreshTitle($)
     }
+    void summarize($, new Map([...finished].map(id => [id, e.answer])))
 
     return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const parts = $.ui.resolve(e)
-    const { Box, Text } = parts
-    const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
+    const { Box, Text } = $.ui.resolve(e)
     const list = await read($, entries)
     const current = await read($, now)
     const where = await read($, place)
     const remaining = openTasks(await read($, tasks))
-    const columns = e.viewport?.columns ?? PANE_COLUMNS
     const finished = list.filter(entry => entry.status === 'done').length
     // 番号は全件の通し番号。新しい順に並べても、どの指示か言い合える
     const numbered = list.map((entry, i) => ({ entry, number: i + 1 })).slice(-PANE_LIMIT).reverse()
@@ -771,7 +950,7 @@ export const register: Register = on => {
 
     const stepRow = (key: string, state: 'past' | 'now' | 'later', label: string) => (
       <Text wrap="wrap" key={key}>
-        <Text color={state === 'past' ? 'green' : state === 'now' ? 'yellow' : 'gray'}>
+        <Text color={state === 'past' ? 'green' : state === 'now' ? 'blue' : 'gray'}>
           {state === 'past' ? '✓' : state === 'now' ? '▶' : '○'}
         </Text>{' '}
         <Text bold={state === 'now'} dimColor={state === 'later'} strikethrough={state === 'past'}>
@@ -780,12 +959,13 @@ export const register: Register = on => {
       </Text>
     )
 
-    // 指示1件を1枚のカードにする。作業中は色付きの枠で、全文と段階の一覧まで見せる
+    // 作業中と待ちは指示の全文と段階を、終わった指示は指示と作業の要約を見せる
     const card = (entry: Entry, number: number) => {
-      const running = isRunning(entry)
-      // 枠線2桁と内側の余白2桁を引いた幅
-      const inner = Math.max(8, columns - 4)
-      const meter = bar(entry.done, entry.steps.length || 1, Math.max(6, Math.min(BAR_CELLS * 2, inner - 6)))
+      const isPast = !isRunning(entry) && !isQueued(entry)
+      // コミットの一覧に出ているコミットは、操作の一覧に重ねて出さない
+      const ops = entry.gitOps.filter(
+        found => !found.sha || !entry.commits.some(commit => commit.sha.startsWith(found.sha ?? '')),
+      )
       return (
         <Box
           key={`card-${entry.id}`}
@@ -795,10 +975,23 @@ export const register: Register = on => {
           paddingX={1}
         >
           {meta(entry, number)}
-          <Text wrap="wrap" dimColor={!running && !isQueued(entry)}>
-            {entry.text}
-          </Text>
-          {entry.commits.length > 0 && (
+          {isPast ? (
+            <Box flexDirection="column">
+              <Text wrap="wrap">
+                <Text dimColor>指示 </Text>
+                {entry.ask ?? firstLine(entry.text)}
+              </Text>
+              {entry.summary && (
+                <Text wrap="wrap">
+                  <Text dimColor>作業 </Text>
+                  {entry.summary}
+                </Text>
+              )}
+            </Box>
+          ) : (
+            <Text wrap="wrap">{entry.text}</Text>
+          )}
+          {entry.commits.length + ops.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               {entry.commits.map(commit => (
                 <Text wrap="wrap" key={`${entry.id}-commit-${commit.sha}`}>
@@ -808,24 +1001,16 @@ export const register: Register = on => {
                   </Text>
                 </Text>
               ))}
+              {ops.map((found, i) => (
+                <Text wrap="wrap" key={`${entry.id}-op-${i}`}>
+                  <Text color="cyan">◆ {GIT_OP_WORD[found.kind]}</Text>
+                  {found.label ? ` ${found.label}` : ''}
+                </Text>
+              ))}
             </Box>
           )}
-          {running && entry.steps.length > 0 && (
+          {isRunning(entry) && entry.steps.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
-              {Svg ? (
-                <Svg
-                  source={trackSvg(meterOf(entry), inner * 8, `${percent(meterOf(entry))}%`)}
-                  alt={`進捗 ${percent(meterOf(entry))}%`}
-                  width={inner * 8}
-                  height={TRACK_H}
-                />
-              ) : (
-                <Text>
-                  <Text color="yellow">{meter.filled}</Text>
-                  <Text dimColor>{meter.rest}</Text>
-                  {` ${percent(meterOf(entry))}%`}
-                </Text>
-              )}
               {entry.steps.map((step, i) =>
                 stepRow(`${entry.id}-step-${i}`, i < entry.done ? 'past' : i === entry.done ? 'now' : 'later', step),
               )}
@@ -882,7 +1067,6 @@ export const register: Register = on => {
     const { Box, Text, Button } = parts
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
-    const running = isRunning(target)
     const seconds = elapsedOf(target, await read($, now))
     const title = (await read($, sessionTitle)) ?? firstLine(target.text)
     const meter = meterOf(target)
@@ -891,8 +1075,7 @@ export const register: Register = on => {
     const titleRow = (
       <Box flexDirection="row" gap={1}>
         <Button key={PANE} plain onPress={() => void togglePane($)}>
-          <Text color={running ? 'yellow' : METER_COLOR[meter.tone]}>{ICON[target.status]}</Text>
-          <Text wrap="truncate-end">{` ${title}`}</Text>
+          <Text wrap="truncate-end">{title}</Text>
         </Button>
         <Box flexGrow={1} />
         <Text dimColor>

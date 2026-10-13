@@ -46,8 +46,10 @@ const fakeGit = (on: On) => {
     }
     return answer('', 1)
   })
+  // 次の Bash が返す出力。git commit の1行目や gh pr create の URL を答えさせる
+  const output = { stdout: '' }
   on('tool.call', { tool: 'Bash' }, () => ({
-    result: { stdout: '', stderr: '', interrupted: false },
+    result: { stdout: output.stdout, stderr: '', interrupted: false },
   }))
 
   const commit = (subject: string, holders = ['claude/1-work']) => {
@@ -56,7 +58,7 @@ const fakeGit = (on: On) => {
     repo.holders[added] = holders
     return added
   }
-  return { repo, commit }
+  return { repo, commit, output }
 }
 
 const runGit = ($: Engine, command: string) => $.tool.call({ tool: 'Bash', command })
@@ -180,5 +182,48 @@ describe('作業のコミットとマージ状況', () => {
     await complete($, 't1', 'answer')
 
     expect((await paneText($)).split('\n')[0]).toBe('local / dispatch-flags-separation-a15081 / worktree')
+  })
+
+  test('マージ・push・PR作成の操作を、その指示のカードに出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+
+    await submit($, clock, '締めて')
+    await $.turn.start({ text: '締めて', turnId: 't1' })
+    await runGit($, 'cd /repo && git merge --no-ff -m "作業を取り込む" claude/1-work && git push origin develop')
+    git.output.stdout = 'https://github.com/owner/repo/pull/12'
+    await runGit($, 'gh pr create --base main --title "リリース" --body "本文"')
+
+    const shown = await paneText($)
+    expect(shown).toMatch(/マージ claude\/1-work/)
+    expect(shown).not.toMatch(/作業を取り込む/)
+    expect(shown).toMatch(/push origin develop/)
+    expect(shown).toMatch(/PR作成 #12/)
+  })
+
+  test('コミットの一覧に出たコミットは、操作の一覧に重ねて出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+
+    await submit($, clock, 'コミットして')
+    await $.turn.start({ text: 'コミットして', turnId: 't1' })
+    git.commit('画面を直す')
+    git.output.stdout = '[claude/1-work 2222222] 画面を直す\n 1 file changed'
+    await runGit($, 'git add -A && git commit -m 画面を直す')
+
+    const shown = await paneText($)
+    expect(shown).toMatch(/2222222 画面を直す/)
+    expect(shown).not.toMatch(/◆ コミット/)
+  })
+
+  test('状態を見るだけの git は操作として出さない', async ($, on) => {
+    const clock = setup(on)
+    fakeGit(on)
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await runGit($, 'git status && git log --oneline -5 && git branch --show-current && git merge --abort')
+
+    expect(await paneText($)).not.toMatch(/◆/)
   })
 })

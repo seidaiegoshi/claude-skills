@@ -17,6 +17,36 @@ export type Entry = {
   done: number
   // この指示のあいだに増えたコミット
   commits: Commit[]
+  // この指示のあいだに打った git / gh の操作(コミット・マージ・push・PR など)
+  gitOps: GitOp[]
+  // 終わったあとに Haiku が付けた指示の要点と、やった作業の要約。まだ無ければ null
+  ask: string | null
+  summary: string | null
+}
+
+export type GitOpKind =
+  | 'commit'
+  | 'merge'
+  | 'rebase'
+  | 'cherry-pick'
+  | 'reset'
+  | 'push'
+  | 'pull'
+  | 'branch'
+  | 'branch-delete'
+  | 'worktree'
+  | 'worktree-remove'
+  | 'tag'
+  | 'pr-create'
+  | 'pr-merge'
+  | 'pr-close'
+
+export type GitOp = {
+  kind: GitOpKind
+  // 操作の相手(ブランチ名・PR番号・コミットの件名など)。無ければ空
+  label: string
+  // コミットだけ。コミットの一覧と重ねて出さないために持つ
+  sha: string | null
 }
 
 // branch: 作業ブランチにだけある / merged: 基点ブランチへマージ済み(未push) /
