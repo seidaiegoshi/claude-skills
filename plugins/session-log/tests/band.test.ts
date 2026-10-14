@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { bandText, complete, setup, submit } from './helpers'
 
@@ -52,6 +52,24 @@ describe('入力欄の上の帯の進捗バー', () => {
     const shown = await bandText($)
     expect(shown).toMatch(/中断/)
     expect(shown).toMatch(/░/)
+  })
+})
+
+describe('進捗の申告の決まり', () => {
+  test('道具を使う作業は規模によらず着手時に段階を申告させ、答えるだけのときは申告させない', async ($, on) => {
+    const contexts: string[][] = []
+    mock.clock(on, { now: 1_000_000 })
+    on('prompt.submit', (_$, e) => {
+      contexts.push(e.context ?? [])
+      return { text: e.text }
+    })
+
+    await $.prompt.submit({ text: 'コミットして', origin: { kind: 'composer' }, wait: false } as never)
+
+    const rule = contexts.at(-1)?.join('\n') ?? ''
+    expect(rule).toMatch(/規模によらず/)
+    expect(rule).toMatch(/答えるだけ/)
+    expect(rule).not.toMatch(/1〜2手で終わる作業では呼ばない/)
   })
 })
 

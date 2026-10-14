@@ -9,9 +9,10 @@ const MAX_ENTRIES = 200
 const PROGRESS_TOOL = 'mcp__session-log__progress'
 const BAR_CELLS = 12
 
+// 小さい作業だと申告を省いて進捗バーが準備中のまま終わるので、道具を使う作業は規模によらず申告させる
 const PROGRESS_RULE =
-  `作業を3段階以上に分けて進めるときは ${PROGRESS_TOOL} で進み具合を申告する。` +
-  '着手時に plan(段階名の配列)を送り、段階を終えるたびに done(終えた段階の数)を送る。1〜2手で終わる作業では呼ばない。'
+  `道具を使って進める作業は、規模によらず着手時に ${PROGRESS_TOOL} で plan(段階名の配列、2〜6個)を送る。` +
+  '段階を終えるたびに done(終えた段階の数)を送る。質問に答えるだけで道具を使わないときは送らない。'
 
 const entries = atom({ plugin: 'session-log', key: 'entries' } as const, [])
 const now = atom({ plugin: 'session-log', key: 'now' } as const, 0)
@@ -22,12 +23,13 @@ const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null
 const background = atom({ plugin: 'session-log', key: 'background' } as const, [])
 
 const TITLE_MODEL = 'haiku'
-const TITLE_HISTORY = 8
+const TITLE_HISTORY = 4
 const BACKFILL = 5
 const TITLE_RULE =
   'Claude Code のセッションに、いま何に取り組んでいてどこまで進んだかが一目で分かるタイトルを付ける。' +
   '50字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
-  '内容は直近の指示の流れから読み取り、どの画面・機能の何をどうするのかを具体的な名詞で書く(「修正」「対応」だけで終わらせない)。' +
+  '内容はいまの指示の話題で書き、前の指示は、いまの指示が短くて何の話か分からないときの手がかりにだけ使って前の話題を引きずらない。' +
+  'どの画面・機能の何をどうするのかを具体的な名詞で書く(「修正」「対応」だけで終わらせない)。' +
   'Issue 番号は別の場所に出すので付けない。状態は渡された段階をもとに短く書く。'
 
 const ICON: Record<EntryStatus, string> = {
@@ -561,11 +563,19 @@ async function readPlace($: EngineInterface) {
   await update($, place, () => where)
 }
 
+// いまの指示より前の数件を、話題の手がかりとして古い順に渡す
+const titleClues = (list: Entry[], target: Entry) => {
+  const before = list.filter(entry => entry.id < target.id).slice(-TITLE_HISTORY)
+  return before.length > 0
+    ? ['前の指示(手がかりだけ、古い順):', ...before.map(entry => `- ${oneLine(entry.text).slice(0, 150)}`)]
+    : []
+}
+
 const titlePrompt = (list: Entry[], target: Entry, where: Place | null, pending: number) =>
   [
     where?.branch ? `ブランチ: ${branchLabel(where.branch)}` : null,
-    '直近の指示(古い順、最後が作業中):',
-    ...list.slice(-TITLE_HISTORY).map(entry => `- ${oneLine(entry.text).slice(0, 150)}`),
+    `いまの指示:\n${oneLine(target.text).slice(0, 300)}`,
+    ...titleClues(list, target),
     !isRunning(target) && pending > 0
       ? `状態: 指示の作業はひと区切りし、バックグラウンドの作業 ${pending} 件の終わりを待っている`
       : !isRunning(target)
@@ -703,7 +713,7 @@ export const register: Register = on => {
         '指示の作業の進み具合を、人が見ている進捗バーに出す。' +
         '着手時に plan で段階名の一覧を送り(送り直すと置き換わり、done は 0 に戻る)、' +
         '段階を終えるたびに done で終えた段階の数を送る。' +
-        '3段階以上に分かれる作業でだけ使い、1〜2手で終わる作業では呼ばない。',
+        '道具を使って進める作業では規模によらず使い、質問に答えるだけのときは使わない。',
       inputSchema: {
         type: 'object',
         properties: {

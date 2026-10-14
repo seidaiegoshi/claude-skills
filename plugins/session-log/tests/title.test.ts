@@ -62,6 +62,30 @@ describe('入力欄の上の帯のタイトル', () => {
     expect(shown).not.toMatch(/#160 配車/)
   })
 
+  test('タイトルは、いまの指示を主に付けさせ、前の指示は手がかりとして分けて渡す', async ($, on) => {
+    const clock = setup(on)
+    const prompts: string[] = []
+    const systems: string[] = []
+    on('model.complete', (_$, e) => {
+      prompts.push(e.prompt)
+      systems.push(e.system ?? '')
+      return answered('タイトル')
+    })
+
+    await submit($, clock, '配車ボードの色を直して')
+    await $.turn.start({ text: '配車ボードの色を直して', turnId: 't1' })
+    await complete($, 't1', 'answer')
+    await submit($, clock, 'session-log の帯を直して')
+    await $.turn.start({ text: 'session-log の帯を直して', turnId: 't2' })
+    await clock.advance(0)
+
+    const prompt = prompts.at(-1) ?? ''
+    expect(prompt).toMatch(/いまの指示:\nsession-log の帯を直して/)
+    expect(prompt).toMatch(/前の指示[^\n]*:\n- 配車ボードの色を直して/)
+    expect(prompt.indexOf('いまの指示')).toBeLessThan(prompt.indexOf('前の指示'))
+    expect(systems.at(-1)).toMatch(/前の話題を引きずらない/)
+  })
+
   test('Haiku が答えないうちは、指示の1行目を出す', async ($, on) => {
     const clock = setup(on)
     on('model.complete', () => ({
