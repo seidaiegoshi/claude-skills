@@ -79,6 +79,8 @@ export type Place = {
   from: string | null
   // マージ先とみなすブランチ(origin/HEAD が指す先)。分からなければ null
   base: string | null
+  // origin が GitHub のときのリポジトリの URL(例: https://github.com/owner/repo)。それ以外は null
+  githubUrl: string | null
   // 未コミットのファイル数と、基点ブランチに無いコミットの数
   dirty: number
   ahead: number

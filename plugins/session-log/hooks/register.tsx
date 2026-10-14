@@ -264,8 +264,16 @@ const branchLabel = (branch: string) => {
   return issue ? `#${issue[1]} ${issue[2]}` : branch.replace(/^claude\//, '')
 }
 
+// git@github.com:o/r.git・https://github.com/o/r.git・ssh://git@github.com/o/r の3つの書き方を受ける
+const GITHUB_REMOTE = /^(?:(?:https?|ssh):\/\/)?(?:[^@/]+@)?github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/
+
+const githubUrlOf = (remote: string | null) => {
+  const matched = remote ? GITHUB_REMOTE.exec(remote) : null
+  return matched ? `https://github.com/${matched[1]}/${matched[2]}` : null
+}
+
 type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead'
-type Chip = { kind: ChipKind; text: string }
+type Chip = { kind: ChipKind; text: string; href?: string }
 
 // 色は明るい配色でも暗い配色でも読める中間の濃さ。ブランチ名は太字にするのでアイコンだけ薄くする
 // icon は Lucide(ISC)の線画、emoji は SVG を描けないターミナルでの代わり
@@ -289,9 +297,13 @@ const iconSvg = (kind: ChipKind) =>
 // 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2(それぞれにアイコン)
 const placeChips = (where: Place): Chip[] => {
   const issue = where.branch ? ISSUE_BRANCH.exec(where.branch) : null
+  // 前の版で覚えた場所には githubUrl が無い
+  const githubUrl = where.githubUrl ?? null
   const chips: (Chip | null)[] = [
     where.isCloud ? { kind: 'cloud', text: 'クラウド' } : { kind: 'local', text: 'ローカル' },
-    issue ? { kind: 'issue', text: `#${issue[1]}` } : null,
+    issue
+      ? { kind: 'issue', text: `#${issue[1]}`, ...(githubUrl ? { href: `${githubUrl}/issues/${issue[1]}` } : {}) }
+      : null,
     where.worktree && where.from ? { kind: 'from', text: `${where.from} から` } : null,
     where.worktree ? { kind: 'worktree', text: 'ワークツリー' } : null,
     where.branch ? { kind: 'branch', text: issue?.[2] ?? branchLabel(where.branch) } : null,
@@ -557,6 +569,7 @@ async function readPlace($: EngineInterface) {
     worktree,
     from,
     base,
+    githubUrl: githubUrlOf(repo?.remote ?? null),
     dirty: lines(await gitLine($, ['status', '--porcelain'])).length,
     ahead,
   }
@@ -1186,7 +1199,7 @@ export const register: Register = on => {
     }
 
     const parts = $.ui.resolve(e)
-    const { Box, Text, Button } = parts
+    const { Box, Text, Button, Link } = parts
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
 
@@ -1196,16 +1209,18 @@ export const register: Register = on => {
         {placeChips(where).map(chip => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
+          // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側
+          const label = chip.href ? <Link href={chip.href}>{chip.text}</Link> : chip.text
           return Svg ? (
             <Box key={chip.kind} flexDirection="row" alignItems="center" gap={1}>
               <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />
               <Text bold={isBranch} color={isBranch ? undefined : style.color}>
-                {chip.text}
+                {label}
               </Text>
             </Box>
           ) : (
             <Text key={chip.kind} bold={isBranch} color={isBranch ? undefined : style.color}>
-              {`${style.emoji} ${chip.text}`}
+              {style.emoji} {label}
             </Text>
           )
         })}

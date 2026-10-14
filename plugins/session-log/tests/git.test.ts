@@ -19,6 +19,8 @@ type FakeRepo = {
   distance: Record<string, number>
   // メイン以外のワークツリーで開いているブランチ
   otherWorktrees: string[]
+  // origin の URL。無ければ null
+  remote: string | null
 }
 
 const sha = (n: number) => `${String(n).repeat(7)}${'0'.repeat(33)}`
@@ -35,12 +37,13 @@ const fakeGit = (on: On) => {
     mainBranch: 'develop',
     distance: {},
     otherWorktrees: [],
+    remote: null,
   }
   const head = () => repo.history.at(-1)?.sha ?? ''
   const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
   mock.env(on, {})
-  on('session.repo', () => ({ value: { root: '/repo', remote: null, internal: false, name: null } }))
+  on('session.repo', () => ({ value: { root: '/repo', remote: repo.remote, internal: false, name: null } }))
   on('process.run', (_$, e) => {
     const [, ...args] = e.argv
     const command = args.join(' ')
@@ -229,6 +232,56 @@ describe('作業のコミットとマージ状況', () => {
     expect(texts.some(text => text.text.includes('💻'))).toBe(false)
     expect(texts.every(text => text.props.backgroundColor === undefined)).toBe(true)
   })
+
+  const issueLinks = async ($: Engine, surface: 'terminal' | 'desktop') => {
+    const ui = await $.ui.mount({
+      plugin: 'session-log',
+      surface,
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100 },
+    } as never)
+    // 見つけた要素の text には href も混ざるので、描く文字は子要素から読む
+    const links = (await ui.findAll({ type: 'Link' })).map(link => ({ href: link.props.href, label: link.children.join('') }))
+    await ui.unmount()
+    return links
+  }
+
+  for (const remote of [
+    'git@github.com:lobby-inc/Miya-Con.git',
+    'https://github.com/lobby-inc/Miya-Con.git',
+    'ssh://git@github.com/lobby-inc/Miya-Con',
+  ]) {
+    test(`origin が GitHub(${remote})なら、Issue 番号を押すと GitHub の Issue を開く`, async ($, on) => {
+      const clock = setup(on)
+      const git = fakeGit(on)
+      git.repo.branch = 'claude/116-manifest-print'
+      git.repo.remote = remote
+
+      await submit($, clock, '見せて')
+      await $.turn.start({ text: '見せて', turnId: 't1' })
+      await complete($, 't1', 'answer')
+
+      const link = { href: 'https://github.com/lobby-inc/Miya-Con/issues/116', label: '#116' }
+      expect(await issueLinks($, 'terminal')).toEqual([link])
+      expect(await issueLinks($, 'desktop')).toEqual([link])
+    })
+  }
+
+  for (const remote of [null, 'git@gitlab.com:lobby-inc/Miya-Con.git']) {
+    test(`origin が無いか GitHub でない(${remote})ときは、Issue 番号をリンクにせず文字だけ出す`, async ($, on) => {
+      const clock = setup(on)
+      const git = fakeGit(on)
+      git.repo.branch = 'claude/116-manifest-print'
+      git.repo.remote = remote
+
+      await submit($, clock, '見せて')
+      await $.turn.start({ text: '見せて', turnId: 't1' })
+      await complete($, 't1', 'answer')
+
+      expect(await issueLinks($, 'desktop')).toEqual([])
+      expect(await placeRow($)).toContain('🎫 #116')
+    })
+  }
 
   test('切った元は、分岐点がいちばん近いブランチにする', async ($, on) => {
     const clock = setup(on)
