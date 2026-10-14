@@ -1226,18 +1226,22 @@ export const register: Register = on => {
       ? { ...meterOf(target), label: statusWord, tone: 'running' }
       : meterOf(target)
 
-    // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする
+    // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
+    // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す
     const titleRow = (
       <Box flexDirection="row" gap={1}>
-        <Button key={PANE} plain onPress={() => void togglePane($)}>
-          <Text wrap="wrap">{title}</Text>
-        </Button>
-        <Box flexGrow={1} />
-        <Text dimColor>
-          {statusWord}
-          {seconds === null ? '' : ` ${duration(seconds)}`}
-          {waitCount > 0 ? ` ・ 待ち ${waitCount}` : ''}
-        </Text>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Button key={PANE} plain onPress={() => void togglePane($)}>
+            <Text wrap="wrap">{title}</Text>
+          </Button>
+        </Box>
+        <Box flexShrink={0}>
+          <Text dimColor>
+            {statusWord}
+            {seconds === null ? '' : ` ${duration(seconds)}`}
+            {waitCount > 0 ? ` ・ 待ち ${waitCount}` : ''}
+          </Text>
+        </Box>
       </Box>
     )
 
