@@ -75,11 +75,20 @@ export type Place = {
   branch: string | null
   // メインの作業ツリーでないときだけ、そのフォルダ名
   worktree: string | null
+  // ワークツリーを切った元のブランチ。メインの作業ツリーや推定できないときは null
+  from: string | null
   // マージ先とみなすブランチ(origin/HEAD が指す先)。分からなければ null
   base: string | null
   // 未コミットのファイル数と、基点ブランチに無いコミットの数
   dirty: number
   ahead: number
+}
+
+// 指示が終わっても裏で走り続ける作業。サブエージェントは agentId、Bash は通知と照らす ID(取れなければ null)
+export type Background = {
+  kind: 'agent' | 'shell'
+  id: string | null
+  at: number
 }
 
 declare module 'claude-code' {
@@ -93,6 +102,7 @@ declare module 'claude-code' {
       lastHead: string | null
       // Haiku が付けたセッションの内容と状態のタイトル。まだ無ければ null
       title: string | null
+      background: Background[]
     }
   }
 }

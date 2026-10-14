@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Commit, CommitState, Entry, EntryStatus, GitOp, GitOpKind, Place, Task, TaskStatus } from '../types'
+import type { Background, Commit, CommitState, Entry, EntryStatus, GitOp, GitOpKind, Place, Task, TaskStatus } from '../types'
 
 const PANE = 'session-log'
 const TITLE = '指示の履歴'
@@ -19,14 +19,16 @@ const place = atom({ plugin: 'session-log', key: 'place' } as const, null)
 const tasks = atom({ plugin: 'session-log', key: 'tasks' } as const, [])
 const lastHead = atom({ plugin: 'session-log', key: 'lastHead' } as const, null)
 const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null)
+const background = atom({ plugin: 'session-log', key: 'background' } as const, [])
 
 const TITLE_MODEL = 'haiku'
 const TITLE_HISTORY = 8
 const BACKFILL = 5
 const TITLE_RULE =
   'Claude Code のセッションに、いま何に取り組んでいてどこまで進んだかが一目で分かるタイトルを付ける。' +
-  '30字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
-  '内容は直近の指示の流れから読み取り、Issue 番号があれば #番号 を頭に付ける。状態は渡された段階をもとに短く書く。'
+  '50字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
+  '内容は直近の指示の流れから読み取り、どの画面・機能の何をどうするのかを具体的な名詞で書く(「修正」「対応」だけで終わらせない)。' +
+  'Issue 番号は別の場所に出すので付けない。状態は渡された段階をもとに短く書く。'
 
 const ICON: Record<EntryStatus, string> = {
   queued: '…',
@@ -129,7 +131,7 @@ const meterOf = (entry: Entry): Meter => {
   if (isRunning(entry) || isQueued(entry)) {
     return total > 0
       ? { done: entry.done, total, label: stepLabel(entry), tone: 'running' }
-      : { done: 0, total: 1, label: '段階なし', tone: 'running' }
+      : { done: 0, total: 1, label: '準備中', tone: 'running' }
   }
   // 最後の done を送らずに終えることがあるので、完了した作業は満たす
   if (entry.status === 'done') {
@@ -140,10 +142,20 @@ const meterOf = (entry: Entry): Meter => {
   return { done: entry.done, total: Math.max(total, 1), label: STATUS_WORD[entry.status], tone: 'stopped' }
 }
 
-const percent = (meter: Meter) => Math.round((meter.done / meter.total) * 100)
-
 const METER_FILL: Record<Meter['tone'], string> = { running: AMBER, done: '#16A34A', stopped: '#8A8780' }
 const METER_COLOR: Record<Meter['tone'], string> = { running: 'yellow', done: 'green', stopped: 'gray' }
+
+// 通知を取りこぼすと残り続けるので、長く経った記録は終わったものとみなす
+const BACKGROUND_TTL_MS = 3 * 60 * 60 * 1000
+const liveBackground = (list: Background[], at: number) => list.filter(item => at - item.at < BACKGROUND_TTL_MS)
+
+// 通知の本文に ID がある作業を消す。ID の分からない Bash は古い順に1件ずつ消す
+const settleBackground = (list: Background[], notice: string) => {
+  const rest = list.filter(item => !(item.id && notice.includes(item.id)))
+  if (rest.length < list.length) return rest
+  const blind = rest.findIndex(item => item.kind === 'shell' && item.id === null)
+  return blind === -1 ? rest : rest.filter((_, i) => i !== blind)
+}
 
 // 帯に出すのは作業中の指示、無ければ最後に終わった指示
 const bandTarget = (list: Entry[]) => focusRunning(list) ?? list.findLast(entry => !isQueued(entry))
@@ -241,15 +253,6 @@ const commitWord = (state: CommitState, base: string) =>
     gone: '書き換え済み',
   })[state]
 
-// 例: 「未コミット 3 ・ develop へ未マージ 2」。何も無ければ空
-const gitSummary = (where: Place) =>
-  [
-    where.dirty > 0 ? `未コミット ${where.dirty}` : null,
-    where.base && where.ahead > 0 ? `${where.base} へ未マージ ${where.ahead}` : null,
-  ]
-    .filter(Boolean)
-    .join(' ・ ')
-
 // /start-issue が切る <接頭辞>/<番号>-<スラッグ> の形だけを Issue に紐づくブランチとみなす
 const ISSUE_BRANCH = /^(?:[^/]+\/)?(\d+)-(.+)$/
 
@@ -259,15 +262,42 @@ const branchLabel = (branch: string) => {
   return issue ? `#${issue[1]} ${issue[2]}` : branch.replace(/^claude\//, '')
 }
 
-// 例: 「local / develop」「local / #45 pane-width / worktree」
-const placeLine = (where: Place) =>
-  [
-    where.isCloud ? 'cloud' : 'local',
-    where.branch ? branchLabel(where.branch) : null,
-    where.worktree ? 'worktree' : null,
+type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead'
+type Chip = { kind: ChipKind; text: string }
+
+// 色は明るい配色でも暗い配色でも読める中間の濃さ。ブランチ名は太字にするのでアイコンだけ薄くする
+// icon は Lucide(ISC)の線画、emoji は SVG を描けないターミナルでの代わり
+const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string; icon: string }> = {
+  local: { color: '#8A877F', name: 'ローカル', emoji: '💻', icon: '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>' },
+  cloud: { color: '#22A6B8', name: 'クラウド', emoji: '☁️', icon: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>' },
+  issue: { color: '#A855F7', name: 'Issue', emoji: '🎫', icon: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>' },
+  from: { color: '#3B82F6', name: '切った元', emoji: '🌱', icon: '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/>' },
+  worktree: { color: '#22A055', name: 'ワークツリー', emoji: '🌳', icon: '<path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/>' },
+  branch: { color: '#8A877F', name: 'ブランチ', emoji: '🌿', icon: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>' },
+  dirty: { color: '#D08A10', name: '未コミット', emoji: '✏️', icon: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>' },
+  ahead: { color: '#E0682C', name: '未マージ', emoji: '⬆️', icon: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>' },
+}
+
+const ICON_SIZE = 14
+
+const iconSvg = (kind: ChipKind) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
+  `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
+
+// 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2(それぞれにアイコン)
+const placeChips = (where: Place): Chip[] => {
+  const issue = where.branch ? ISSUE_BRANCH.exec(where.branch) : null
+  const chips: (Chip | null)[] = [
+    where.isCloud ? { kind: 'cloud', text: 'クラウド' } : { kind: 'local', text: 'ローカル' },
+    issue ? { kind: 'issue', text: `#${issue[1]}` } : null,
+    where.worktree && where.from ? { kind: 'from', text: `${where.from} から` } : null,
+    where.worktree ? { kind: 'worktree', text: 'ワークツリー' } : null,
+    where.branch ? { kind: 'branch', text: issue?.[2] ?? branchLabel(where.branch) } : null,
+    where.dirty > 0 ? { kind: 'dirty', text: `未コミット ${where.dirty}` } : null,
+    where.base && where.ahead > 0 ? { kind: 'ahead', text: `未マージ ${where.ahead}` } : null,
   ]
-    .filter(Boolean)
-    .join(' / ')
+  return chips.filter((chip): chip is Chip => chip !== null)
+}
 
 async function gitLine($: EngineInterface, args: string[], cwd?: string) {
   const ran = await $.process.run(['git', ...args], { timeoutMs: 5000, ...(cwd ? { cwd } : {}) })
@@ -474,6 +504,33 @@ async function refreshPlace($: EngineInterface) {
   }
 }
 
+// Git は切った元のブランチ名を残さないので、分岐点がいちばん近いブランチを切った元とみなす。
+// 並んだら、ワークツリーを切るときの元になるメインの作業ツリーのブランチ、次にマージ先を選ぶ
+async function cutFromBranch($: EngineInterface, root: string, current: string, base: string | null) {
+  const mainBranch = await gitLine($, ['branch', '--show-current'], root)
+  // 先頭の塊がメインの作業ツリー。ほかのワークツリーの作業ブランチは元にならない
+  const others = new Set(
+    lines(await gitLine($, ['worktree', 'list', '--porcelain'], root))
+      .filter(line => line.startsWith('branch refs/heads/'))
+      .map(line => line.slice('branch refs/heads/'.length))
+      .filter(name => name !== mainBranch),
+  )
+  const candidates = lines(await gitLine($, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], root)).filter(
+    name => name !== current && !others.has(name),
+  )
+  const rank = (name: string) => (name === mainBranch ? 0 : name === base ? 1 : 2)
+  let best: { name: string; distance: number } | null = null
+  for (const name of candidates) {
+    const counted = await gitLine($, ['rev-list', '--count', `${name}..HEAD`])
+    if (counted === null) continue
+    const distance = Number(counted)
+    if (!best || distance < best.distance || (distance === best.distance && rank(name) < rank(best.name))) {
+      best = { name, distance }
+    }
+  }
+  return best?.name ?? null
+}
+
 async function readPlace($: EngineInterface) {
   const repo = await $.session.repo()
   const top = await gitLine($, ['rev-parse', '--show-toplevel'])
@@ -481,26 +538,37 @@ async function readPlace($: EngineInterface) {
   const base = repo ? await baseBranch($, repo.root) : null
   const ahead =
     base && branch && branch !== base ? Number(await gitLine($, ['rev-list', '--count', `${base}..HEAD`])) || 0 : 0
+  const worktree = repo && top && top !== repo.root ? basename(top) : null
+  // 切った元はあとでメインの作業ツリーが切り替わると推定が変わるので、初めて見たときの値を使い続ける
+  const previous = await read($, place)
+  const from =
+    !repo || !worktree || !branch
+      ? null
+      : previous?.worktree === worktree && previous.from
+        ? previous.from
+        : await cutFromBranch($, repo.root, branch, base)
   const where: Place = {
     // クラウドでは CLAUDE_CODE_REMOTE が立つ
     isCloud: (await $.env.get('CLAUDE_CODE_REMOTE')) === 'true',
     repo: repo ? basename(repo.root) : null,
     branch,
-    worktree: repo && top && top !== repo.root ? basename(top) : null,
+    worktree,
+    from,
     base,
     dirty: lines(await gitLine($, ['status', '--porcelain'])).length,
     ahead,
   }
   await update($, place, () => where)
-  $.ui.status([placeLine(where), gitSummary(where)].filter(Boolean).join(' ・ '))
 }
 
-const titlePrompt = (list: Entry[], target: Entry, where: Place | null) =>
+const titlePrompt = (list: Entry[], target: Entry, where: Place | null, pending: number) =>
   [
     where?.branch ? `ブランチ: ${branchLabel(where.branch)}` : null,
     '直近の指示(古い順、最後が作業中):',
     ...list.slice(-TITLE_HISTORY).map(entry => `- ${oneLine(entry.text).slice(0, 150)}`),
-    !isRunning(target)
+    !isRunning(target) && pending > 0
+      ? `状態: 指示の作業はひと区切りし、バックグラウンドの作業 ${pending} 件の終わりを待っている`
+      : !isRunning(target)
       ? `状態: 指示の作業を${STATUS_WORD[target.status]}で終え、次の指示を待っている`
       : target.steps.length > 0
         ? `段階: ${target.steps.map((step, i) => `${i < target.done ? '✓' : i === target.done ? '▶' : '○'}${step}`).join(' ')}`
@@ -509,13 +577,14 @@ const titlePrompt = (list: Entry[], target: Entry, where: Place | null) =>
     .filter(Boolean)
     .join('\n')
 
-// 前置きや括弧を付けて返すことがあるので、1行目の中身だけを残す
+// 前置きや括弧、帯の一番上に出している Issue 番号を付けて返すことがあるので、1行目の中身だけを残す
 const cleanTitle = (text: string) =>
   firstLine(text.trim())
     .replace(/^(タイトル|title)\s*[:：]\s*/i, '')
     .replace(/^[「『"']+|[」』"']+$/g, '')
+    .replace(/^#\d+\s*/, '')
     .trim()
-    .slice(0, 40)
+    .slice(0, 60)
 
 // 返事を待つ間に次の付け直しが始まったら、遅れた返事は捨てる
 let titleRequest = 0
@@ -538,8 +607,13 @@ async function refreshTitle($: EngineInterface) {
     .complete({
       model: TITLE_MODEL,
       system: TITLE_RULE,
-      prompt: titlePrompt(list, target, await read($, place)),
-      maxTokens: 80,
+      prompt: titlePrompt(
+        list,
+        target,
+        await read($, place),
+        liveBackground(await read($, background), await $.clock.now()).length,
+      ),
+      maxTokens: 160,
       effort: 'low',
       timeoutMs: 15000,
     })
@@ -596,6 +670,25 @@ async function summarize($: EngineInterface, answers: Map<number, string>) {
       updateEntry(list, entry, item => ({ ...item, ask: ask ?? item.ask, summary: summary ?? item.summary })),
     )
   }
+}
+
+// 裏の作業が終わった通知。待機中に届いたら、通知を受けて動くターンを最後の指示の続きとして作業中に戻す
+async function settleNotice($: EngineInterface, text: string) {
+  await update($, background, list => settleBackground(list, text))
+  const list = await read($, entries)
+  const last = list.findLast(entry => !isQueued(entry))
+  if (last?.status === 'done' && !list.some(isRunning)) {
+    await update($, entries, items =>
+      updateEntry(items, last, entry => ({ ...entry, status: 'running' as const, turnId: null, seconds: null })),
+    )
+  }
+}
+
+// 裏で走らせた Bash を数える。ID は通知の本文と照らすために使い、結果の形が変わって取れなくても数には入れる
+async function trackShell($: EngineInterface, result: unknown) {
+  const id = /"backgroundTaskId":"([^"]+)"/.exec(JSON.stringify(result))?.[1] ?? null
+  const at = await $.clock.now()
+  await update($, background, list => [...list, { kind: 'shell' as const, id, at }])
 }
 
 export const register: Register = on => {
@@ -668,6 +761,8 @@ export const register: Register = on => {
       )
     }
 
+    // セッションを開き直すと裏の作業は残っていないので、前の記録を捨てる
+    await update($, background, () => [])
     await refreshPlace($)
 
     // 作業中だけ経過時間を進める
@@ -689,6 +784,10 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      await settleNotice($, e.text)
+      return next(e)
+    }
     const isPerson = PERSON_ORIGINS.has(e.origin.kind)
     const text = tidy(e.text)
 
@@ -816,6 +915,9 @@ export const register: Register = on => {
   // 作業の締めはコミットのあとワークツリーごと消すので、ターンの終わりを待たず git のたびに拾う
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const answer = await next(e)
+    if ((e as { run_in_background?: boolean }).run_in_background && answer.result && !answer.isError) {
+      await trackShell($, answer.result)
+    }
     if (!/\b(git|gh)\b/.test(e.command)) return answer
 
     const found = answer.result && !answer.isError ? gitOpsOf(e.command, answer.result.stdout) : []
@@ -828,6 +930,15 @@ export const register: Register = on => {
       )
     }
     await refreshGit($)
+    return answer
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const answer = await next(e)
+    if (e.background && 'agentId' in answer) {
+      const at = await $.clock.now()
+      await update($, background, list => [...list, { kind: 'agent' as const, id: answer.agentId, at }])
+    }
     return answer
   })
 
@@ -879,8 +990,14 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    // サブエージェントのターンは指示の区切りではない
-    if (e.agentId) return next(e)
+    // サブエージェントのターンは指示の区切りではない。裏のサブエージェントなら待ちから外す
+    if (e.agentId) {
+      const before = await read($, background)
+      await update($, background, list => list.filter(item => item.id !== e.agentId))
+      const isIdle = !(await read($, entries)).some(entry => isRunning(entry) || isQueued(entry))
+      if (isIdle && before.length > 0 && (await read($, background)).length === 0) void refreshTitle($)
+      return next(e)
+    }
 
     // 作業中のうちに拾わないと、増えたコミットが次の待ちの指示に付いてしまう
     await refreshGit($)
@@ -1022,12 +1139,6 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        {where && (
-          <Text wrap="wrap" color={where.isCloud ? 'cyan' : undefined} dimColor={!where.isCloud}>
-            {placeLine(where)}
-            {gitSummary(where) ? <Text color="yellow">{`  ${gitSummary(where)}`}</Text> : ''}
-          </Text>
-        )}
         <Text bold>
           指示 {list.length}件
           <Text dimColor>
@@ -1058,8 +1169,9 @@ export const register: Register = on => {
     const list = await read($, entries)
     const target = bandTarget(list)
     const waitCount = list.filter(isQueued).length
+    const where = await read($, place)
 
-    if (e.props.hasSurvey || !target) {
+    if (e.props.hasSurvey || (!target && !where)) {
       return next(e)
     }
 
@@ -1067,32 +1179,66 @@ export const register: Register = on => {
     const { Box, Text, Button } = parts
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
+
+    // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す
+    const placeRow = where && (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {placeChips(where).map(chip => {
+          const style = CHIP_STYLE[chip.kind]
+          const isBranch = chip.kind === 'branch'
+          return Svg ? (
+            <Box key={chip.kind} flexDirection="row" alignItems="center" gap={1}>
+              <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />
+              <Text bold={isBranch} color={isBranch ? undefined : style.color}>
+                {chip.text}
+              </Text>
+            </Box>
+          ) : (
+            <Text key={chip.kind} bold={isBranch} color={isBranch ? undefined : style.color}>
+              {`${style.emoji} ${chip.text}`}
+            </Text>
+          )
+        })}
+      </Box>
+    )
+
+    if (!target) {
+      return <Box flexDirection="column">{placeRow}</Box>
+    }
+
     const seconds = elapsedOf(target, await read($, now))
     const title = (await read($, sessionTitle)) ?? firstLine(target.text)
-    const meter = meterOf(target)
+    // 指示を終えても裏の作業が残っていれば、完了と出さずに待っている件数を出す
+    const pending = liveBackground(await read($, background), await $.clock.now()).length
+    const isWaitingBackground = target.status === 'done' && pending > 0
+    const statusWord = isWaitingBackground ? `バックグラウンド ${pending}件` : STATUS_WORD[target.status]
+    const meter: Meter = isWaitingBackground
+      ? { ...meterOf(target), label: statusWord, tone: 'running' }
+      : meterOf(target)
 
     // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする
     const titleRow = (
       <Box flexDirection="row" gap={1}>
         <Button key={PANE} plain onPress={() => void togglePane($)}>
-          <Text wrap="truncate-end">{title}</Text>
+          <Text wrap="wrap">{title}</Text>
         </Button>
         <Box flexGrow={1} />
         <Text dimColor>
-          {STATUS_WORD[target.status]}
+          {statusWord}
           {seconds === null ? '' : ` ${duration(seconds)}`}
           {waitCount > 0 ? ` ・ 待ち ${waitCount}` : ''}
         </Text>
       </Box>
     )
 
-    // デスクトップは1桁がおよそ8px。割合のぶんを引いた残りを全部バーに充てる
+    // デスクトップは1桁がおよそ8px。幅を全部バーに充てる
     const total = Math.max(320, (e.props.bodyColumns || 100) * 8)
-    const trackWidth = Math.max(160, Math.min(1600, total - 60))
+    const trackWidth = Math.max(160, Math.min(1600, total - 16))
     const cells = bar(meter.done, meter.total, Math.max(10, Math.min(40, (e.props.bodyColumns || 100) - 40)))
 
     return (
       <Box flexDirection="column">
+        {placeRow}
         {titleRow}
         <Box flexDirection="row" alignItems="center" gap={1}>
           {Svg ? (
@@ -1109,8 +1255,6 @@ export const register: Register = on => {
               <Text color={METER_COLOR[meter.tone]}> {meter.label}</Text>
             </Text>
           )}
-          <Box flexGrow={1} />
-          <Text dimColor>{String(percent(meter)).padStart(3, ' ')}%</Text>
         </Box>
       </Box>
     )

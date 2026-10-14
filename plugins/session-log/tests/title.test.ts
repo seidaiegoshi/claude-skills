@@ -26,6 +26,42 @@ describe('入力欄の上の帯のタイトル', () => {
     expect(shown).not.toMatch(/日付の入力をカレンダーで選べるようにして/)
   })
 
+  test('Haiku に、画面や機能など具体的な対象を入れた50字までのタイトルを頼み、そのまま切らずに帯に出す', async ($, on) => {
+    const clock = setup(on)
+    const long = '配車ボードの時間帯ごとの自動配車で訪問がA枠からはみ出る件の調査 — 原因調査中'
+    const systems: string[] = []
+    on('model.complete', (_$, e) => {
+      systems.push(e.system ?? '')
+      return answered(long)
+    })
+
+    await submit($, clock, '配車がずれる件を調べて')
+    await $.turn.start({ text: '配車がずれる件を調べて', turnId: 't1' })
+    await clock.advance(0)
+
+    expect(systems.at(-1)).toMatch(/50字以内/)
+    expect(systems.at(-1)).toMatch(/具体的/)
+    expect(await bandText($)).toMatch(long)
+  })
+
+  test('Issue 番号は帯の一番上に出すので、タイトルに付けさせず、付けて返ってきても頭の番号を外す', async ($, on) => {
+    const clock = setup(on)
+    const systems: string[] = []
+    on('model.complete', (_$, e) => {
+      systems.push(e.system ?? '')
+      return answered('#160 配車ボードの時間帯ごとの自動配車 — 実装中')
+    })
+
+    await submit($, clock, '配車を直して')
+    await $.turn.start({ text: '配車を直して', turnId: 't1' })
+    await clock.advance(0)
+
+    expect(systems.at(-1)).not.toMatch(/#番号 を頭に付ける/)
+    const shown = await bandText($)
+    expect(shown).toMatch(/^配車ボードの時間帯ごとの自動配車 — 実装中$/m)
+    expect(shown).not.toMatch(/#160 配車/)
+  })
+
   test('Haiku が答えないうちは、指示の1行目を出す', async ($, on) => {
     const clock = setup(on)
     on('model.complete', () => ({

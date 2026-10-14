@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { complete, paneText, setup, submit, type Engine } from './helpers'
+import { bandText, complete, paneText, setup, submit, type Engine } from './helpers'
 
 type FakeRepo = {
   // 古い順のコミット。HEAD は末尾
@@ -11,13 +11,31 @@ type FakeRepo = {
   dirty: string[]
   ahead: number
   branch: string
+  // 作業ツリーの最上位。/repo ならメインの作業ツリーで作業している
+  top: string
+  // メインの作業ツリーで開いているブランチ
+  mainBranch: string
+  // 手元のブランチごとに、HEAD にあってそのブランチに無いコミットの数(切った元の推定に使う)
+  distance: Record<string, number>
+  // メイン以外のワークツリーで開いているブランチ
+  otherWorktrees: string[]
 }
 
 const sha = (n: number) => `${String(n).repeat(7)}${'0'.repeat(33)}`
 
 // git の呼び出しを手元の偽リポジトリで答える。メインの作業ツリーは /repo、ワークツリーは /repo-wt
 const fakeGit = (on: On) => {
-  const repo: FakeRepo = { history: [{ sha: sha(1), subject: '始まり' }], holders: {}, dirty: [], ahead: 0, branch: 'claude/1-work' }
+  const repo: FakeRepo = {
+    history: [{ sha: sha(1), subject: '始まり' }],
+    holders: {},
+    dirty: [],
+    ahead: 0,
+    branch: 'claude/1-work',
+    top: '/repo-wt',
+    mainBranch: 'develop',
+    distance: {},
+    otherWorktrees: [],
+  }
   const head = () => repo.history.at(-1)?.sha ?? ''
   const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
@@ -27,8 +45,23 @@ const fakeGit = (on: On) => {
     const [, ...args] = e.argv
     const command = args.join(' ')
     if (command === 'rev-parse HEAD') return answer(head())
-    if (command === 'rev-parse --show-toplevel') return answer('/repo-wt')
-    if (command === 'branch --show-current') return answer(repo.branch)
+    if (command === 'rev-parse --show-toplevel') return answer(repo.top)
+    if (command === 'branch --show-current') return answer(e.init?.cwd === '/repo' ? repo.mainBranch : repo.branch)
+    if (command === 'worktree list --porcelain') {
+      const blocks = [
+        ['worktree /repo', `branch refs/heads/${repo.mainBranch}`],
+        ['worktree /repo-wt', `branch refs/heads/${repo.branch}`],
+        ...repo.otherWorktrees.map((name, i) => [`worktree /other-${i}`, `branch refs/heads/${name}`]),
+      ]
+      return answer(blocks.map(block => block.join('\n')).join('\n\n'))
+    }
+    if (command === 'for-each-ref --format=%(refname:short) refs/heads') {
+      return answer([repo.branch, ...Object.keys(repo.distance)].join('\n'))
+    }
+    const counted = /^rev-list --count (.+)\.\.HEAD$/.exec(command)
+    if (counted && counted[1] !== undefined && counted[1] in repo.distance) {
+      return answer(String(repo.distance[counted[1]]))
+    }
     if (command === 'symbolic-ref --short refs/remotes/origin/HEAD') return answer('origin/develop')
     if (command === 'status --porcelain') return answer(repo.dirty.join('\n'))
     if (command.startsWith('rev-list --count')) return answer(String(repo.ahead))
@@ -62,6 +95,12 @@ const fakeGit = (on: On) => {
 }
 
 const runGit = ($: Engine, command: string) => $.tool.call({ tool: 'Bash', command })
+
+// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を切り出す
+const placeRow = async ($: Engine, title = '見せて') => {
+  const texts = (await bandText($)).split('\n').map(text => text.trim())
+  return texts.slice(0, texts.indexOf(title))
+}
 
 describe('作業のコミットとマージ状況', () => {
   test('指示の最中に増えたコミットを、その指示のカードに未マージで出す', async ($, on) => {
@@ -141,23 +180,144 @@ describe('作業のコミットとマージ状況', () => {
     expect(await paneText($)).not.toMatch(/人が手元で積んだコミット/)
   })
 
-  test('見出しに未コミットのファイル数と基点ブランチへ未マージのコミット数を出す', async ($, on) => {
+  test('帯の一番上に、場所・Issue 番号・切った元・ワークツリー・ブランチ名・未コミット・未マージをアイコン付きで出す', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
+    git.repo.branch = 'claude/116-manifest-print'
+    git.repo.mainBranch = 'feature'
+    git.repo.distance = { feature: 1, develop: 1 }
     git.repo.dirty = [' M a.ts', '?? b.ts']
-    git.repo.ahead = 1
 
     await submit($, clock, '見せて')
     await $.turn.start({ text: '見せて', turnId: 't1' })
     await complete($, 't1', 'answer')
 
-    expect(await paneText($)).toMatch(/未コミット 2 ・ develop へ未マージ 1/)
+    expect(await placeRow($)).toEqual([
+      '💻 ローカル',
+      '🎫 #116',
+      '🌱 feature から',
+      '🌳 ワークツリー',
+      '🌿 manifest-print',
+      '✏️ 未コミット 2',
+      '⬆️ 未マージ 1',
+    ])
   })
 
-  test('Issue 番号入りのブランチは、見出しとステータスラインに番号を #付きで出す', async ($, on) => {
+  test('デスクトップの帯は、絵文字の代わりに種類ごとの線画アイコンを出し、文字もアイコンと同じ色にする。背景色は付けない', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
     git.repo.branch = 'claude/116-manifest-print'
+    git.repo.distance = { develop: 1 }
+    git.repo.dirty = [' M a.ts']
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    const ui = await $.ui.mount({
+      plugin: 'session-log',
+      surface: 'desktop',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100 },
+    } as never)
+    const alts = (await ui.findAll({ type: 'Svg' })).map(svg => svg.props.alt)
+    const texts = await ui.findAll({ type: 'Text' })
+    await ui.unmount()
+
+    expect(alts).toEqual(expect.arrayContaining(['ローカル', 'Issue', '切った元', 'ワークツリー', 'ブランチ', '未コミット', '未マージ']))
+    expect(texts.find(text => text.text === '#116')?.props.color).toBeDefined()
+    expect(texts.some(text => text.text.includes('💻'))).toBe(false)
+    expect(texts.every(text => text.props.backgroundColor === undefined)).toBe(true)
+  })
+
+  test('切った元は、分岐点がいちばん近いブランチにする', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.distance = { develop: 5, feature: 2 }
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect(await placeRow($)).toContain('🌱 feature から')
+  })
+
+  test('分岐点が同じなら、ワークツリーを切る元のメインの作業ツリーのブランチを選ぶ', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.mainBranch = 'feature'
+    git.repo.distance = { develop: 0, feature: 0 }
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect(await placeRow($)).toContain('🌱 feature から')
+  })
+
+  test('一度決めた切った元は、あとでメインの作業ツリーがブランチを替えても変えない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.mainBranch = 'feature'
+    git.repo.distance = { develop: 0, feature: 0 }
+
+    await submit($, clock, '一つ目')
+    await $.turn.start({ text: '一つ目', turnId: 't1' })
+    await complete($, 't1', 'answer')
+    git.repo.mainBranch = 'develop'
+    await submit($, clock, '二つ目')
+    await $.turn.start({ text: '二つ目', turnId: 't2' })
+    await complete($, 't2', 'answer')
+
+    expect(await placeRow($, '二つ目')).toContain('🌱 feature から')
+  })
+
+  test('ほかのワークツリーで開いているブランチは切った元にしない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.distance = { 'claude/2-other': 0, develop: 3 }
+    git.repo.otherWorktrees = ['claude/2-other']
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect(await placeRow($)).toContain('🌱 develop から')
+  })
+
+  test('メインの作業ツリーでは、切った元とワークツリーを出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.top = '/repo'
+    git.repo.branch = 'feature'
+    git.repo.distance = { develop: 0 }
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    expect(await placeRow($)).toEqual(['💻 ローカル', '🌿 feature'])
+  })
+
+  test('番号の無いブランチは、claude/ を省いた名前を出し Issue 番号を出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.branch = 'claude/dispatch-flags-separation-a15081'
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    await complete($, 't1', 'answer')
+
+    const row = await placeRow($)
+    expect(row).toContain('🌿 dispatch-flags-separation-a15081')
+    expect(row.some(text => text.includes('🎫'))).toBe(false)
+  })
+
+  test('場所はステータス行にもパネルにも出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.branch = 'claude/116-manifest-print'
+    git.repo.dirty = [' M a.ts']
     const statuses: (string | undefined)[] = []
     on('ui.status', (_$, e) => {
       statuses.push(e.text)
@@ -168,20 +328,9 @@ describe('作業のコミットとマージ状況', () => {
     await $.turn.start({ text: '見せて', turnId: 't1' })
     await complete($, 't1', 'answer')
 
-    expect(await paneText($)).toMatch(/#116 manifest-print/)
-    expect(statuses.at(-1)).toMatch(/^local \/ #116 manifest-print \/ worktree/)
-  })
-
-  test('番号の無いブランチは、これまでどおり名前だけ出す', async ($, on) => {
-    const clock = setup(on)
-    const git = fakeGit(on)
-    git.repo.branch = 'claude/dispatch-flags-separation-a15081'
-
-    await submit($, clock, '見せて')
-    await $.turn.start({ text: '見せて', turnId: 't1' })
-    await complete($, 't1', 'answer')
-
-    expect((await paneText($)).split('\n')[0]).toBe('local / dispatch-flags-separation-a15081 / worktree')
+    expect(statuses).toEqual([])
+    const pane = await paneText($)
+    expect(pane).not.toMatch(/ローカル|ワークツリー|未コミット/)
   })
 
   test('マージ・push・PR作成の操作を、その指示のカードに出す', async ($, on) => {
