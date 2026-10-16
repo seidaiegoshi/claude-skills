@@ -233,6 +233,63 @@ describe('作業のコミットとマージ状況', () => {
     expect(texts.every(text => text.props.backgroundColor === undefined)).toBe(true)
   })
 
+  test('帯の最後に、セッションのコミット数とマージ済みの数を1つの札で出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    git.commit('一つ目', ['claude/1-work'])
+    await runGit($, 'git commit -m 一つ目')
+    git.commit('二つ目', ['develop'])
+    await runGit($, 'git commit -m 二つ目')
+    await complete($, 't1', 'answer')
+    await submit($, clock, '続けて')
+    await $.turn.start({ text: '続けて', turnId: 't2' })
+    git.commit('三つ目', ['develop', 'origin/develop'])
+    await runGit($, 'git commit -m 三つ目')
+
+    expect((await placeRow($, '続けて')).at(-1)).toBe('📦 コミット 3(マージ済み 2)')
+  })
+
+  test('マージ済みが 0 件なら「(マージ済み 0)」を付けない。コミットが無ければ札を出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    expect(await bandText($)).not.toMatch(/📦/)
+
+    git.commit('一つ目', ['claude/1-work'])
+    await runGit($, 'git commit -m 一つ目')
+    const shown = await bandText($)
+    expect(shown).toMatch(/📦 コミット 1$/m)
+    expect(shown).not.toMatch(/マージ済み/)
+  })
+
+  test('デスクトップの帯には、コミットの札も線画アイコンで出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    git.commit('一つ目', ['develop'])
+    await runGit($, 'git commit -m 一つ目')
+
+    const ui = await $.ui.mount({
+      plugin: 'session-log',
+      surface: 'desktop',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100 },
+    } as never)
+    const alts = (await ui.findAll({ type: 'Svg' })).map(svg => svg.props.alt)
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+    await ui.unmount()
+
+    expect(alts).toContain('コミット')
+    expect(texts).toContain('コミット 1(マージ済み 1)')
+  })
+
   const issueLinks = async ($: Engine, surface: 'terminal' | 'desktop') => {
     const ui = await $.ui.mount({
       plugin: 'session-log',

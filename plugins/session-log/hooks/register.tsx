@@ -20,17 +20,24 @@ const place = atom({ plugin: 'session-log', key: 'place' } as const, null)
 const tasks = atom({ plugin: 'session-log', key: 'tasks' } as const, [])
 const lastHead = atom({ plugin: 'session-log', key: 'lastHead' } as const, null)
 const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null)
+const sessionOverview = atom({ plugin: 'session-log', key: 'overview' } as const, null)
 const background = atom({ plugin: 'session-log', key: 'background' } as const, [])
 
 const TITLE_MODEL = 'haiku'
 const TITLE_HISTORY = 4
 const BACKFILL = 5
+const OVERVIEW_HISTORY = 8
 const TITLE_RULE =
   'Claude Code のセッションに、いま何に取り組んでいてどこまで進んだかが一目で分かるタイトルを付ける。' +
   '50字以内の日本語1行で「内容 — 状態」の形にし、タイトルだけを返す。' +
   '内容はいまの指示の話題で書き、前の指示は、いまの指示が短くて何の話か分からないときの手がかりにだけ使って前の話題を引きずらない。' +
   'どの画面・機能の何をどうするのかを具体的な名詞で書く(「修正」「対応」だけで終わらせない)。' +
   'Issue 番号は別の場所に出すので付けない。状態は渡された段階をもとに短く書く。'
+const OVERVIEW_RULE =
+  'Claude Code のセッション全体が何の作業かを、あとで見返す人が一目で分かるように説明する。' +
+  '40字ほどの日本語1行にし、概要だけを返す。渡された指示と作業を通して見て、' +
+  '最近の指示1つの話題ではなく、セッションを貫く作業の目的を、画面・機能などの具体的な名詞で書く。' +
+  '状態や進み具合・Issue 番号は書かない。'
 
 const ICON: Record<EntryStatus, string> = {
   queued: '…',
@@ -272,7 +279,7 @@ const githubUrlOf = (remote: string | null) => {
   return matched ? `https://github.com/${matched[1]}/${matched[2]}` : null
 }
 
-type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead'
+type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead' | 'commits'
 type Chip = { kind: ChipKind; text: string; href?: string }
 
 // 色は明るい配色でも暗い配色でも読める中間の濃さ。ブランチ名は太字にするのでアイコンだけ薄くする
@@ -286,6 +293,7 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
   branch: { color: '#8A877F', name: 'ブランチ', emoji: '🌿', icon: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>' },
   dirty: { color: '#D08A10', name: '未コミット', emoji: '✏️', icon: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>' },
   ahead: { color: '#E0682C', name: '未マージ', emoji: '⬆️', icon: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>' },
+  commits: { color: '#D6537F', name: 'コミット', emoji: '📦', icon: '<circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/>' },
 }
 
 const ICON_SIZE = 14
@@ -294,8 +302,19 @@ const iconSvg = (kind: ChipKind) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
   `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
 
-// 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2(それぞれにアイコン)
-const placeChips = (where: Place): Chip[] => {
+// 同じ sha は1回、書き換えで消えた gone は作り直した側と二重になるので数えない
+const commitTally = (list: Entry[]) => {
+  const states = new Map<string, CommitState>()
+  for (const commit of list.flatMap(entry => entry.commits).filter(commit => commit.state !== 'gone')) {
+    const seen = states.get(commit.sha)
+    if (!seen || commit.state === 'merged' || commit.state === 'pushed') states.set(commit.sha, commit.state)
+  }
+  const merged = [...states.values()].filter(state => state === 'merged' || state === 'pushed').length
+  return { total: states.size, merged }
+}
+
+// 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2 コミット 3(マージ済み 2)(それぞれにアイコン)
+const placeChips = (where: Place, tally: { total: number; merged: number }): Chip[] => {
   const issue = where.branch ? ISSUE_BRANCH.exec(where.branch) : null
   // 前の版で覚えた場所には githubUrl が無い
   const githubUrl = where.githubUrl ?? null
@@ -309,6 +328,9 @@ const placeChips = (where: Place): Chip[] => {
     where.branch ? { kind: 'branch', text: issue?.[2] ?? branchLabel(where.branch) } : null,
     where.dirty > 0 ? { kind: 'dirty', text: `未コミット ${where.dirty}` } : null,
     where.base && where.ahead > 0 ? { kind: 'ahead', text: `未マージ ${where.ahead}` } : null,
+    tally.total > 0
+      ? { kind: 'commits', text: `コミット ${tally.total}${tally.merged > 0 ? `(マージ済み ${tally.merged})` : ''}` }
+      : null,
   ]
   return chips.filter((chip): chip is Chip => chip !== null)
 }
@@ -600,10 +622,10 @@ const titlePrompt = (list: Entry[], target: Entry, where: Place | null, pending:
     .filter(Boolean)
     .join('\n')
 
-// 前置きや括弧、帯の一番上に出している Issue 番号を付けて返すことがあるので、1行目の中身だけを残す
+// 前置きや括弧、帯の一番上に出している Issue 番号を付けて返すことがあるので、1行目の中身だけを残す。概要も同じ形で返る
 const cleanTitle = (text: string) =>
   firstLine(text.trim())
-    .replace(/^(タイトル|title)\s*[:：]\s*/i, '')
+    .replace(/^(タイトル|title|概要|overview)\s*[:：]\s*/i, '')
     .replace(/^[「『"']+|[」』"']+$/g, '')
     .replace(/^#\d+\s*/, '')
     .trim()
@@ -611,6 +633,7 @@ const cleanTitle = (text: string) =>
 
 // 返事を待つ間に次の付け直しが始まったら、遅れた返事は捨てる
 let titleRequest = 0
+let overviewRequest = 0
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
 
@@ -646,6 +669,40 @@ async function refreshTitle($: EngineInterface) {
 
   // 付けられなかったときは、前の指示のタイトルを残さず指示の1行目に戻す
   await update($, sessionTitle, () => title || null)
+}
+
+// 始まっている指示の要点と作業の要約を古い順に渡す。要約の無い指示は1行目で補う
+const overviewPrompt = (list: Entry[]) =>
+  list
+    .filter(entry => !isQueued(entry))
+    .slice(-OVERVIEW_HISTORY)
+    .map(entry =>
+      [`- 指示: ${entry.ask ?? oneLine(firstLine(entry.text)).slice(0, 150)}`, entry.summary ? `  作業: ${entry.summary}` : null]
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .join('\n')
+
+async function refreshOverview($: EngineInterface) {
+  const request = ++overviewRequest
+  const prompt = overviewPrompt(await read($, entries))
+  if (!prompt) return
+
+  const reply = await $.model
+    .complete({
+      model: TITLE_MODEL,
+      system: OVERVIEW_RULE,
+      prompt: `これまでの指示と作業(古い順):\n${prompt}`,
+      maxTokens: 160,
+      effort: 'low',
+      timeoutMs: 15000,
+    })
+    .catch(() => null)
+  const overview = reply?.isAnswered ? cleanTitle(reply.text) : ''
+  if (request !== overviewRequest) return
+
+  // 付けられなかったときは、前の概要を残す
+  if (overview) await update($, sessionOverview, () => overview)
 }
 
 const SUMMARY_RULE =
@@ -1050,7 +1107,8 @@ export const register: Register = on => {
     if (!(await read($, entries)).some(entry => isRunning(entry) || isQueued(entry))) {
       void refreshTitle($)
     }
-    void summarize($, new Map([...finished].map(id => [id, e.answer])))
+    // 概要の材料に要約が入るよう、要約が終わってから付け直す
+    void summarize($, new Map([...finished].map(id => [id, e.answer]))).then(() => refreshOverview($))
 
     return next(e)
   })
@@ -1206,7 +1264,7 @@ export const register: Register = on => {
     // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す
     const placeRow = where && (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {placeChips(where).map(chip => {
+        {placeChips(where, commitTally(list)).map(chip => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
           // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側
@@ -1236,12 +1294,30 @@ export const register: Register = on => {
     // 指示を終えても裏の作業が残っていれば、完了と出さずに待っている件数を出す
     const pending = liveBackground(await read($, background), await $.clock.now()).length
     const isWaitingBackground = target.status === 'done' && pending > 0
-    const statusWord = isWaitingBackground ? `バックグラウンド ${pending}件` : STATUS_WORD[target.status]
+    // 作業中も件数が見えるよう添える。完了のときは完了の代わりに出すので重ねない
+    const statusWord = isWaitingBackground
+      ? `バックグラウンド ${pending}件`
+      : pending > 0
+        ? `${STATUS_WORD[target.status]} ・ バックグラウンド ${pending}件`
+        : STATUS_WORD[target.status]
     const meter: Meter = isWaitingBackground
       ? { ...meterOf(target), label: statusWord, tone: 'running' }
       : meterOf(target)
 
-    // 1行目はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
+    // 最初の指示が終わるまでは概要が無いので出さない
+    const overview = await read($, sessionOverview)
+    const overviewRow = overview && (
+      <Box flexDirection="row" gap={1}>
+        <Box flexShrink={0}>
+          <Text dimColor>セッション</Text>
+        </Box>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text wrap="wrap">{overview}</Text>
+        </Box>
+      </Box>
+    )
+
+    // 進行中の作業の行はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
     // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す
     const titleRow = (
       <Box flexDirection="row" gap={1}>
@@ -1268,6 +1344,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {placeRow}
+        {overviewRow}
         {titleRow}
         <Box flexDirection="row" alignItems="center" gap={1}>
           {Svg ? (

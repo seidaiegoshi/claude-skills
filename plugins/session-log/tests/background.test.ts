@@ -27,6 +27,20 @@ describe('バックグラウンドの作業', () => {
     expect(await bandText($)).toMatch(/完了/)
   })
 
+  test('作業中でも、バックグラウンドの作業が残っていれば状態の欄に件数を添える', async ($, on) => {
+    const clock = setup(on)
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'a1' }) as never)
+
+    await submit($, clock, '調べて')
+    await $.turn.start({ text: '調べて', turnId: 't1' })
+    expect(await bandText($)).not.toMatch(/バックグラウンド/)
+
+    await $.agent.spawn({ prompt: '調べる', background: true } as never)
+    const working = await bandText($)
+    expect(working).toMatch(/作業中 ・ バックグラウンド 1件/)
+    expect(working.match(/バックグラウンド/g)).toHaveLength(1)
+  })
+
   test('バックグラウンドの Bash は、終わりの通知が来るまで残り、通知の作業中は作業中に戻す', async ($, on) => {
     const clock = setup(on)
     on('tool.call', { tool: 'Bash' }, () => ({

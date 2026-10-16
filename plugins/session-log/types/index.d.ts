@@ -104,6 +104,8 @@ declare module 'claude-code' {
       lastHead: string | null
       // Haiku が付けたセッションの内容と状態のタイトル。まだ無ければ null
       title: string | null
+      // Haiku が付けたセッション全体の作業の概要。最初の指示が終わるまでは null
+      overview: string | null
       background: Background[]
     }
   }
