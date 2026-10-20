@@ -300,7 +300,8 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
 
 const ICON_SIZE = 14
 
-const TAB_CHIP: Record<PaneTab, string> = { history: '↺ 履歴', git: '⑂ GitGraph' }
+// 帯ではこの絵文字だけを押せる印にする。絵文字は色を持つので、デスクトップのボタンでも色付きで見える
+const TAB_ICON: Record<PaneTab, string> = { history: '🕘', git: '🔀' }
 
 const iconSvg = (kind: ChipKind) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
@@ -1322,8 +1323,8 @@ export const register: Register = on => {
     )
     const tabRow = (
       <Box flexDirection="row" gap={1}>
-        {tabButton('history', 'セッション履歴')}
-        {tabButton('git', 'GitGraph')}
+        {tabButton('history', `${TAB_ICON.history} セッション履歴`)}
+        {tabButton('git', `${TAB_ICON.git} GitGraph`)}
       </Box>
     )
 
@@ -1546,10 +1547,18 @@ export const register: Register = on => {
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
 
-    // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す
-    const placeRow = where && (
+    const tabIcon = (key: string, tab: PaneTab) => (
+      <Box key={key} flexShrink={0}>
+        <Button key={key} plain label={TAB_ICON[tab]} onPress={() => void togglePane($, tab)} />
+      </Box>
+    )
+
+    // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す。
+    // GitGraph の印はブランチ名の手前に付け、ブランチが無い(場所をまだ読んでいない)ときは行の最後に置く
+    const chips = where ? placeChips(where, commitTally(list)) : []
+    const placeRow = (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {placeChips(where, commitTally(list)).map(chip => {
+        {chips.map(chip => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
           // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側
@@ -1559,15 +1568,15 @@ export const register: Register = on => {
               {chip.href ? <Link href={chip.href}>{chip.text}</Link> : chip.text}
             </Text>
           )
-          return Svg ? (
+          return (
             <Box key={chip.kind} flexDirection="row" alignItems="center" gap={1}>
-              <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />
+              {isBranch && tabIcon('band-git', 'git')}
+              {Svg && <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />}
               {label}
             </Box>
-          ) : (
-            <Box key={chip.kind}>{label}</Box>
           )
         })}
+        {!chips.some(chip => chip.kind === 'branch') && tabIcon('band-git', 'git')}
       </Box>
     )
 
@@ -1590,36 +1599,23 @@ export const register: Register = on => {
       ? { ...meterOf(target), label: statusWord, tone: 'running' }
       : meterOf(target)
 
-    // 最初の指示が終わるまでは概要が無いので出さない
+    // 履歴の印は概要の先頭に置く。最初の指示が終わるまでは概要が無いので印だけを出す
     const overview = await read($, sessionOverview)
-    const overviewRow = overview && (
-      <Box flexDirection="row" gap={1}>
-        <Box flexShrink={0}>
-          <Text dimColor>セッション</Text>
-        </Box>
-        <Box flexGrow={1} flexShrink={1} minWidth={0}>
-          <Text wrap="wrap">{overview}</Text>
-        </Box>
+    const overviewRow = (
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {tabIcon('band-history', 'history')}
+        {overview && (
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text wrap="wrap">{overview}</Text>
+          </Box>
+        )}
       </Box>
     )
 
     // 進行中の作業の行はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
-    // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す
-    // 帯で押せるのはここだけなので、1行目の札と同じ色の背景を敷いてボタンと分かるようにする。
-    // Button は Svg を包めないので、アイコンは線画に近い文字で描く。タイトルは履歴を開く
-    const tabChip = (key: string, label: string, color: string, tab: PaneTab) => (
-      <Box flexShrink={0}>
-        <Button key={key} plain onPress={() => void togglePane($, tab)}>
-          <Text color="#FFFFFF" backgroundColor={color} bold>
-            {` ${label} `}
-          </Text>
-        </Button>
-      </Box>
-    )
+    // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す。タイトルは履歴を開く
     const titleRow = (
       <Box flexDirection="row" gap={1}>
-        {tabChip('band-history', TAB_CHIP.history, '#3B82F6', 'history')}
-        {tabChip('band-git', TAB_CHIP.git, '#E0682C', 'git')}
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           <Button key={PANE} plain onPress={() => void togglePane($, 'history')}>
             <Text wrap="wrap">{title}</Text>

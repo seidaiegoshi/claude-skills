@@ -21,7 +21,7 @@ const settle = async (clock: ReturnType<typeof setup>) => {
 }
 
 describe('入力欄の上の帯のセッションの概要', () => {
-  test('最初の指示が終わるまでは概要の行を出さず、終わると Haiku が付けた概要を「セッション」ラベルつきで出す', async ($, on) => {
+  test('最初の指示が終わるまでは概要を出さず、終わると Haiku が付けた概要を「セッション」の文言なしで出す', async ($, on) => {
     const clock = setup(on)
     on('model.complete', (_$, e) =>
       answered(kindOf(e.system) === 'overview' ? '請求書の番号体系の見直し' : '請求書の番号 — 実装中'),
@@ -36,7 +36,7 @@ describe('入力欄の上の帯のセッションの概要', () => {
     await settle(clock)
 
     const lines = (await bandText($)).split('\n')
-    expect(lines).toContain('セッション')
+    expect(lines).not.toContain('セッション')
     expect(lines).toContain('請求書の番号体系の見直し')
     // 概要の行は進行中の作業のタイトルより上に出す
     expect(lines.indexOf('請求書の番号体系の見直し')).toBeLessThan(lines.indexOf('請求書の番号 — 実装中'))
