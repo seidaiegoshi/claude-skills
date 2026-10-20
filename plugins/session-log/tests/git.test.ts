@@ -99,10 +99,10 @@ const fakeGit = (on: On) => {
 
 const runGit = ($: Engine, command: string) => $.tool.call({ tool: 'Bash', command })
 
-// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を切り出す
-const placeRow = async ($: Engine, title = '見せて') => {
+// 帯の札は1枚ずつ別の Text になる。3行目の先頭の履歴ボタンより前を切り出す
+const placeRow = async ($: Engine) => {
   const texts = (await bandText($)).split('\n').map(text => text.trim())
-  return texts.slice(0, texts.indexOf(title))
+  return texts.slice(0, texts.indexOf('↺ 履歴'))
 }
 
 describe('作業のコミットとマージ状況', () => {
@@ -206,7 +206,7 @@ describe('作業のコミットとマージ状況', () => {
     ])
   })
 
-  test('デスクトップの帯は、絵文字の代わりに種類ごとの線画アイコンを出し、文字もアイコンと同じ色にする。背景色は付けない', async ($, on) => {
+  test('デスクトップの帯は、絵文字の代わりに種類ごとの線画アイコンを出し、文字もアイコンと同じ色にする。1行目の札に背景色は付けない', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
     git.repo.branch = 'claude/116-manifest-print'
@@ -230,7 +230,10 @@ describe('作業のコミットとマージ状況', () => {
     expect(alts).toEqual(expect.arrayContaining(['ローカル', 'Issue', '切った元', 'ワークツリー', 'ブランチ', '未コミット', '未マージ']))
     expect(texts.find(text => text.text === '#116')?.props.color).toBeDefined()
     expect(texts.some(text => text.text.includes('💻'))).toBe(false)
-    expect(texts.every(text => text.props.backgroundColor === undefined)).toBe(true)
+    // 背景色は3行目のボタン(履歴・GitGraph)だけに付ける
+    const buttons = ['↺ 履歴', '⑂ GitGraph']
+    expect(texts.filter(text => !buttons.includes(text.text.trim())).every(text => text.props.backgroundColor === undefined)).toBe(true)
+    expect(texts.filter(text => buttons.includes(text.text.trim())).every(text => text.props.backgroundColor !== undefined)).toBe(true)
   })
 
   test('帯の最後に、セッションのコミット数とマージ済みの数を1つの札で出す', async ($, on) => {
@@ -249,7 +252,7 @@ describe('作業のコミットとマージ状況', () => {
     git.commit('三つ目', ['develop', 'origin/develop'])
     await runGit($, 'git commit -m 三つ目')
 
-    expect((await placeRow($, '続けて')).at(-1)).toBe('📦 コミット 3(マージ済み 2)')
+    expect((await placeRow($)).at(-1)).toBe('📦 コミット 3(マージ済み 2)')
   })
 
   test('マージ済みが 0 件なら「(マージ済み 0)」を付けない。コミットが無ければ札を出さない', async ($, on) => {
@@ -379,7 +382,7 @@ describe('作業のコミットとマージ状況', () => {
     await $.turn.start({ text: '二つ目', turnId: 't2' })
     await complete($, 't2', 'answer')
 
-    expect(await placeRow($, '二つ目')).toContain('🌱 feature から')
+    expect(await placeRow($)).toContain('🌱 feature から')
   })
 
   test('ほかのワークツリーで開いているブランチは切った元にしない', async ($, on) => {

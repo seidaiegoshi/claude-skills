@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, UiPressArgument } from 'claude-code'
 
-import type { Background, Commit, CommitState, Entry, EntryStatus, GitOp, GitOpKind, Place, Task, TaskStatus } from '../types'
+import type { Background, Commit, CommitState, Entry, EntryStatus, GitOp, GitOpKind, Graph, GraphCommit, PaneTab, Place, Task, TaskStatus } from '../types'
 
 const PANE = 'session-log'
 const TITLE = '指示の履歴'
@@ -22,6 +22,8 @@ const lastHead = atom({ plugin: 'session-log', key: 'lastHead' } as const, null)
 const sessionTitle = atom({ plugin: 'session-log', key: 'title' } as const, null)
 const sessionOverview = atom({ plugin: 'session-log', key: 'overview' } as const, null)
 const background = atom({ plugin: 'session-log', key: 'background' } as const, [])
+const paneTab = atom({ plugin: 'session-log', key: 'tab' } as const, 'history')
+const graph = atom({ plugin: 'session-log', key: 'graph' } as const, null)
 
 const TITLE_MODEL = 'haiku'
 const TITLE_HISTORY = 4
@@ -298,6 +300,8 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
 
 const ICON_SIZE = 14
 
+const TAB_CHIP: Record<PaneTab, string> = { history: '↺ 履歴', git: '⑂ GitGraph' }
+
 const iconSvg = (kind: ChipKind) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
   `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
@@ -529,6 +533,7 @@ async function refreshGit($: EngineInterface) {
   await collectCommits($).catch(() => {})
   await refreshCommits($).catch(() => {})
   await refreshPlace($)
+  await refreshGraph($).catch(() => {})
 }
 
 // ブランチは指示のたびに切り替わりうるので毎回取り直す
@@ -598,6 +603,175 @@ async function readPlace($: EngineInterface) {
   await update($, place, () => where)
 }
 
+const GRAPH_LIMIT = 150
+const GRAPH_COLUMNS = 90
+const LANE_W = 12
+const ROW_H = 24
+const LANE_COLORS = ['#0EA5E9', '#D946EF', '#F59E0B', '#22C55E', '#EF4444', '#8B5CF6', '#14B8A6', '#F97316']
+const laneColor = (lane: number) => LANE_COLORS[lane % LANE_COLORS.length] ?? '#8A8780'
+
+// 件名にタブが入っていても切れないよう、件名を最後の項目にして残りをまとめる
+const parseCommit = (line: string): GraphCommit | null => {
+  const [sha = '', parents = '', refs = '', author = '', at = '0', ...subject] = line.split('\t')
+  if (!sha) return null
+  return {
+    sha,
+    parents: parents.split(' ').filter(Boolean),
+    refs: refs.split(', ').filter(ref => ref !== '' && !ref.endsWith('/HEAD')),
+    subject: subject.join('\t'),
+    author,
+    at: Number(at) || 0,
+  }
+}
+
+async function loadGraph($: EngineInterface): Promise<Graph | null> {
+  const repo = await $.session.repo()
+  const log = await gitLine($, ['log', '--all', '--topo-order', `-n${GRAPH_LIMIT}`, '--format=%H%x09%P%x09%D%x09%an%x09%ct%x09%s'])
+  if (log === null) return null
+  const worktreeBranches = lines(await gitLine($, ['worktree', 'list', '--porcelain'], repo?.root))
+    .filter(line => line.startsWith('branch refs/heads/'))
+    .map(line => line.slice('branch refs/heads/'.length))
+  return {
+    commits: lines(log)
+      .map(parseCommit)
+      .filter((commit): commit is GraphCommit => commit !== null),
+    worktreeBranches,
+    loadedAt: await $.clock.now(),
+  }
+}
+
+// 読めなかったときに何も書かないと、初回は「読み込んでいます」のまま止まって見える
+async function refreshGraph($: EngineInterface) {
+  const loaded = await loadGraph($).catch(() => null)
+  await update($, graph, prev =>
+    loaded ?? { commits: prev?.commits ?? [], worktreeBranches: prev?.worktreeBranches ?? [], loadedAt: prev?.loadedAt ?? 0, isFailed: true },
+  )
+}
+
+// before / after はその行に入る前と出たあとの、レーンごとに待っている sha。forks はこのコミットから親へ伸びるレーン
+type GraphRow = {
+  commit: GraphCommit
+  lane: number
+  before: (string | null)[]
+  after: (string | null)[]
+  forks: number[]
+}
+
+const freeLane = (lanes: (string | null)[]) => {
+  const at = lanes.indexOf(null)
+  return at === -1 ? lanes.length : at
+}
+
+// 新しい順にたどり、コミットは自分を待つレーンに置き、第1親がそのレーンを継ぐ。
+// ほかの親は待っているレーンがあれば合流し、無ければ空いたレーンを割り当てる
+const layoutGraph = (commits: GraphCommit[]): GraphRow[] => {
+  const lanes: (string | null)[] = []
+  return commits.map(commit => {
+    const before = [...lanes]
+    const found = lanes.indexOf(commit.sha)
+    const lane = found === -1 ? freeLane(lanes) : found
+    lanes.forEach((waiting, i) => {
+      if (waiting === commit.sha) lanes[i] = null
+    })
+    const [first, ...rest] = commit.parents
+    lanes[lane] = first ?? null
+    const forks = first ? [lane] : []
+    for (const parent of rest) {
+      const waiting = lanes.indexOf(parent)
+      const target = waiting === -1 ? freeLane(lanes) : waiting
+      lanes[target] = parent
+      forks.push(target)
+    }
+    while (lanes.length > 0 && lanes.at(-1) === null) lanes.pop()
+    return { commit, lane, before, after: [...lanes], forks }
+  })
+}
+
+const laneX = (lane: number) => lane * LANE_W + LANE_W / 2
+
+const curve = (x1: number, y1: number, x2: number, y2: number, color: string) => {
+  const my = (y1 + y2) / 2
+  return `<path d="M${x1} ${y1}C${x1} ${my} ${x2} ${my} ${x2} ${y2}" stroke="${color}" stroke-width="2" fill="none"/>`
+}
+
+// 行の上半分は前の行から来た線、下半分は次の行へ続く線。行の SVG を縦に積むと1本につながる
+const rowLines = (row: GraphRow) => {
+  const mid = ROW_H / 2
+  const x = laneX(row.lane)
+  const top = row.before.map((waiting, i) =>
+    waiting === null ? '' : curve(laneX(i), 0, waiting === row.commit.sha ? x : laneX(i), mid, laneColor(i)),
+  )
+  const bottom = row.after.map((waiting, i) => {
+    if (waiting === null) return ''
+    const above = row.before[i] ?? null
+    const pass = above !== null && above !== row.commit.sha ? curve(laneX(i), mid, laneX(i), ROW_H, laneColor(i)) : ''
+    const fork = row.forks.includes(i) ? curve(x, mid, laneX(i), ROW_H, laneColor(i)) : ''
+    return pass + fork
+  })
+  return [...top, ...bottom].join('')
+}
+
+const ago = (seconds: number) =>
+  seconds < 3600
+    ? `${Math.max(1, Math.floor(seconds / 60))}分前`
+    : seconds < 86400
+      ? `${Math.floor(seconds / 3600)}時間前`
+      : `${Math.floor(seconds / 86400)}日前`
+
+// copy は押したときにクリップボードへ入れる名前(HEAD -> と tag: を外したもの)
+type RefBadge = { text: string; copy: string; isRemote: boolean; isHead: boolean }
+
+// origin/ とタグは枠だけの印に、ワークツリーで開いているブランチは 🌳 を添える
+const refBadges = (refs: string[], worktreeBranches: string[]): RefBadge[] =>
+  refs.map(ref => {
+    const isHead = ref.startsWith('HEAD -> ')
+    const name = ref.replace(/^HEAD -> /, '')
+    const isRemote = name.startsWith('origin/') || name.startsWith('tag: ')
+    const label = name.replace(/^tag: /, '🏷 ').replace(/^claude\//, '')
+    return {
+      text: worktreeBranches.includes(name) && !isHead ? `🌳 ${label}` : label,
+      copy: name.replace(/^tag: /, ''),
+      isRemote,
+      isHead,
+    }
+  })
+
+// 件名やブランチ名は押せるよう Text で描くので、SVG はレーンの線と点だけにする
+const graphLanesSvg = (row: GraphRow, laneCount: number) => {
+  const mid = ROW_H / 2
+  const x = laneX(row.lane)
+  const color = laneColor(row.lane)
+  const width = laneCount * LANE_W
+  const isHead = row.commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))
+  const node = isHead
+    ? `<circle cx="${x}" cy="${mid}" r="5" fill="none" stroke="${color}" stroke-width="2.5"/><circle cx="${x}" cy="${mid}" r="2" fill="${color}"/>`
+    : `<circle cx="${x}" cy="${mid}" r="4" fill="${color}"/>`
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${ROW_H}" viewBox="0 0 ${width} ${ROW_H}">` +
+    rowLines(row) +
+    node +
+    '</svg>'
+  )
+}
+
+// デスクトップなどのリモートの画面は $.ui.copy の経路がまだ無いので、macOS の pbcopy に渡す
+async function copyText($: EngineInterface, text: string, surface: UiPressArgument['surface']) {
+  const copied = await $.ui.copy({ text, surface }).catch(() => null)
+  const isCopied =
+    copied?.isCopied ||
+    (await $.process
+      .run(['pbcopy'], { stdin: text, timeoutMs: 3000 })
+      .then(ran => ran.exitCode === 0)
+      .catch(() => false))
+  await $.ui.toast(isCopied ? `コピーしました: ${text}` : `コピーできませんでした: ${text}`)
+}
+
+// ターミナルは SVG を描かないので、レーンを ● と │ の文字で並べる
+const graphRowLanes = (row: GraphRow, laneCount: number) =>
+  Array.from({ length: laneCount }, (_, i) =>
+    i === row.lane ? '●' : (row.before[i] ?? null) !== null || (row.after[i] ?? null) !== null ? '│' : ' ',
+  ).join('')
+
 // いまの指示より前の数件を、話題の手がかりとして古い順に渡す
 const titleClues = (list: Entry[], target: Entry) => {
   const before = list.filter(entry => entry.id < target.id).slice(-TITLE_HISTORY)
@@ -635,12 +809,29 @@ const cleanTitle = (text: string) =>
 let titleRequest = 0
 let overviewRequest = 0
 
-const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
+// グラフは横幅が要るので、Git タブのときだけペインを広げる
+const openPane = async ($: EngineInterface) =>
+  $.ui.open({ id: PANE, title: TITLE, columns: (await read($, paneTab)) === 'git' ? GRAPH_COLUMNS : PANE_COLUMNS })
+
+async function selectTab($: EngineInterface, tab: PaneTab) {
+  await update($, paneTab, () => tab)
+  await openPane($)
+  // 人がターミナルで打った git 操作も拾えるよう、開くたびに読み直す
+  if (tab === 'git') await refreshGraph($).catch(() => {})
+}
 
 // ペインは開きっぱなしにせず、帯を押したときだけ出し、もう一度押すと閉じる
-async function togglePane($: EngineInterface) {
-  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
-  await (isOpen ? $.ui.close({ id: PANE }) : openPane($))
+// 帯から開くときは見たいタブを選んで開く。同じタブで開いていれば閉じる
+async function togglePane($: EngineInterface, tab: PaneTab) {
+  const pane = (await $.ui.panes()).find(open => open.id === PANE)
+  const isVisible = pane?.isPlaced && pane.isShown
+  if (isVisible && (await read($, paneTab)) === tab) {
+    await $.ui.close({ id: PANE })
+    return
+  }
+  // 開いている id への open は題名を付け直すだけで表に出ないので、裏や置き場待ちのペインは開き直す
+  if (pane && !isVisible) await $.ui.close({ id: PANE })
+  await selectTab($, tab)
 }
 
 async function refreshTitle($: EngineInterface) {
@@ -844,6 +1035,7 @@ export const register: Register = on => {
     // セッションを開き直すと裏の作業は残っていないので、前の記録を捨てる
     await update($, background, () => [])
     await refreshPlace($)
+    void refreshGraph($).catch(() => {})
 
     // 作業中だけ経過時間を進める
     $.clock.every(5000, async () => {
@@ -1114,10 +1306,102 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const parts = $.ui.resolve(e)
+    const { Box, Text, Button } = parts
+    const tab = await read($, paneTab)
+    const where = await read($, place)
+
+    // 切り替えられると分かるよう、ボタンの見た目にして選んでいる側を強調する
+    const tabButton = (value: PaneTab, label: string) => (
+      <Button
+        key={`tab-${value}`}
+        label={label}
+        variant={tab === value ? 'primary' : 'secondary'}
+        onPress={() => void selectTab($, value)}
+      />
+    )
+    const tabRow = (
+      <Box flexDirection="row" gap={1}>
+        {tabButton('history', 'セッション履歴')}
+        {tabButton('git', 'GitGraph')}
+      </Box>
+    )
+
+    if (tab === 'git') {
+      const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
+      const loaded = await read($, graph)
+      const rows = layoutGraph(loaded?.commits ?? [])
+      const laneCount = Math.max(1, ...rows.map(row => Math.max(row.before.length, row.after.length, row.lane + 1)))
+      const at = await $.clock.now()
+      const worktreeBranches = loaded?.worktreeBranches ?? []
+
+      return (
+        <Box flexDirection="column" gap={1}>
+          {tabRow}
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            {/* 未コミットの件数も変わるので、場所と一緒に読み直す */}
+            <Button key="graph-refresh" label="↻ 更新" onPress={() => void Promise.all([refreshGraph($), refreshPlace($)])} />
+            {loaded?.isFailed ? (
+              <Text color="yellow">git の履歴を読めませんでした。↻ 更新で読み直します</Text>
+            ) : (
+              <Text dimColor>{loaded ? `${clock(loaded.loadedAt ?? 0)} 時点` : 'git の履歴を読み込んでいます…'}</Text>
+            )}
+          </Box>
+          {loaded && (
+            <Text dimColor>
+              {`全ブランチの直近 ${rows.length} コミット ・ 件名を押すとハッシュ、ブランチ名を押すと名前をコピー`}
+            </Text>
+          )}
+          {where && where.dirty > 0 && (
+            <Text color="yellow">
+              ✏️ 未コミットの変更 {where.dirty} 件{where.branch ? `(${branchLabel(where.branch)})` : ''}
+            </Text>
+          )}
+          {/* 行の高さを SVG にそろえ、行を隙間なく積んでレーンの線をつなげる */}
+          <Box flexDirection="column">
+            {rows.map(row => {
+              const sha = row.commit.sha
+              const color = laneColor(row.lane)
+              return (
+                <Box key={`graph-${sha}`} flexDirection="row" alignItems="center" gap={1}>
+                  <Box flexShrink={0}>
+                    {Svg ? (
+                      <Svg source={graphLanesSvg(row, laneCount)} alt={sha.slice(0, 7)} width={laneCount * LANE_W} height={ROW_H} />
+                    ) : (
+                      <Text color={color}>{graphRowLanes(row, laneCount)}</Text>
+                    )}
+                  </Box>
+                  {refBadges(row.commit.refs, worktreeBranches).map(badge => (
+                    <Box key={`ref-${sha}-${badge.copy}`} flexShrink={0}>
+                      <Button key={`ref-${sha}-${badge.copy}`} plain onPress={press => void copyText($, badge.copy, press.surface)}>
+                        <Text
+                          bold={badge.isHead}
+                          color={badge.isRemote ? color : 'white'}
+                          backgroundColor={badge.isRemote ? undefined : color}
+                        >
+                          {badge.isRemote ? `[${badge.text}]` : ` ${badge.text} `}
+                        </Text>
+                      </Button>
+                    </Box>
+                  ))}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    <Button key={`copy-${sha}`} plain onPress={press => void copyText($, sha.slice(0, 7), press.surface)}>
+                      <Text wrap="truncate-end">{row.commit.subject}</Text>
+                    </Button>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <Text dimColor>{`${row.commit.author} ・ ${ago(Math.max(0, Math.round(at / 1000) - row.commit.at))}`}</Text>
+                  </Box>
+                </Box>
+              )
+            })}
+          </Box>
+        </Box>
+      )
+    }
+
     const list = await read($, entries)
     const current = await read($, now)
-    const where = await read($, place)
     const remaining = openTasks(await read($, tasks))
     const finished = list.filter(entry => entry.status === 'done').length
     // 番号は全件の通し番号。新しい順に並べても、どの指示か言い合える
@@ -1220,6 +1504,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
+        {tabRow}
         <Text bold>
           指示 {list.length}件
           <Text dimColor>
@@ -1268,18 +1553,19 @@ export const register: Register = on => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
           // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側
-          const label = chip.href ? <Link href={chip.href}>{chip.text}</Link> : chip.text
+          const label = (
+            <Text bold={isBranch} color={isBranch ? undefined : style.color}>
+              {Svg ? '' : `${style.emoji} `}
+              {chip.href ? <Link href={chip.href}>{chip.text}</Link> : chip.text}
+            </Text>
+          )
           return Svg ? (
             <Box key={chip.kind} flexDirection="row" alignItems="center" gap={1}>
               <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />
-              <Text bold={isBranch} color={isBranch ? undefined : style.color}>
-                {label}
-              </Text>
+              {label}
             </Box>
           ) : (
-            <Text key={chip.kind} bold={isBranch} color={isBranch ? undefined : style.color}>
-              {style.emoji} {label}
-            </Text>
+            <Box key={chip.kind}>{label}</Box>
           )
         })}
       </Box>
@@ -1319,10 +1605,23 @@ export const register: Register = on => {
 
     // 進行中の作業の行はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
     // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す
+    // 帯で押せるのはここだけなので、1行目の札と同じ色の背景を敷いてボタンと分かるようにする。
+    // Button は Svg を包めないので、アイコンは線画に近い文字で描く。タイトルは履歴を開く
+    const tabChip = (key: string, label: string, color: string, tab: PaneTab) => (
+      <Box flexShrink={0}>
+        <Button key={key} plain onPress={() => void togglePane($, tab)}>
+          <Text color="#FFFFFF" backgroundColor={color} bold>
+            {` ${label} `}
+          </Text>
+        </Button>
+      </Box>
+    )
     const titleRow = (
       <Box flexDirection="row" gap={1}>
+        {tabChip('band-history', TAB_CHIP.history, '#3B82F6', 'history')}
+        {tabChip('band-git', TAB_CHIP.git, '#E0682C', 'git')}
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
-          <Button key={PANE} plain onPress={() => void togglePane($)}>
+          <Button key={PANE} plain onPress={() => void togglePane($, 'history')}>
             <Text wrap="wrap">{title}</Text>
           </Button>
         </Box>

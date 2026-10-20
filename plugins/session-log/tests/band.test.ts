@@ -116,5 +116,76 @@ describe('帯を押してペインを開け閉めする', () => {
       expect(open.has('session-log')).toBe(false)
       await band.unmount()
     })
+
+    test(`${surface}: 3行目の GitGraph ボタンは GitGraph タブ、履歴ボタンは履歴タブでペインを開き、同じタブをもう一度押すと閉じる`, async ($, on) => {
+      const clock = setup(on)
+      const open = fakePanes(on)
+      const activeTab = async () => {
+        const pane = await $.ui.mount({
+          plugin: 'session-log',
+          surface,
+          component: 'Pane',
+          requestId: 'session-log',
+          props: { title: '指示の履歴', isFocused: false },
+        } as never)
+        const tab = (await pane.findAll({ type: 'Button' })).find(b => b.props.variant === 'primary')?.props.label
+        await pane.unmount()
+        return tab
+      }
+
+      await submit($, clock, '文言を直して')
+      await $.turn.start({ text: '文言を直して', turnId: 't1' })
+
+      const band = await mountBand($, surface)
+      await band.press({ key: 'band-git' })
+      expect(open.has('session-log')).toBe(true)
+      expect(await activeTab()).toBe('GitGraph')
+
+      await band.press({ key: 'band-history' })
+      expect(open.has('session-log')).toBe(true)
+      expect(await activeTab()).toBe('セッション履歴')
+
+      await band.press({ key: 'band-history' })
+      expect(open.has('session-log')).toBe(false)
+      await band.unmount()
+    })
+
+    test(`${surface}: 開いた扱いでも画面に出ていないペインは、同じタブを押すと閉じずに開き直して出す`, async ($, on) => {
+      const clock = setup(on)
+      const calls: string[] = []
+      let state: 'hidden' | 'shown' | 'closed' = 'shown'
+      on('ui.panes', () => ({
+        value:
+          state === 'closed'
+            ? []
+            : [{ id: 'session-log', title: '指示の履歴', isShown: state === 'shown', isFocused: false, isPlaced: state === 'shown' }],
+      }))
+      on('ui.open', (_$, e) => {
+        calls.push(`open ${e.id}`)
+        // 開いている id への open は題名を付け直すだけで、裏のペインは裏のまま
+        if (state === 'closed') state = 'shown'
+        return { value: { isPlaced: true as const } }
+      })
+      on('ui.close', (_$, e) => {
+        calls.push(`close ${e.id}`)
+        state = 'closed'
+        return { value: undefined }
+      })
+
+      await submit($, clock, '文言を直して')
+      await $.turn.start({ text: '文言を直して', turnId: 't1' })
+
+      const band = await mountBand($, surface)
+      await band.press({ key: 'band-git' })
+      state = 'hidden'
+      calls.length = 0
+      await band.press({ key: 'band-git' })
+      expect(calls).toEqual(['close session-log', 'open session-log'])
+      expect(state).toBe('shown')
+
+      await band.press({ key: 'band-git' })
+      await band.unmount()
+      expect(state).toBe('closed')
+    })
   }
 })

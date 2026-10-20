@@ -93,6 +93,30 @@ export type Background = {
   at: number
 }
 
+// ペインの Git タブに描くコミット。git log --all の新しい順
+export type GraphCommit = {
+  sha: string
+  parents: string[]
+  // git log の %D を分けたもの(例: HEAD -> develop / origin/develop / tag: v1)
+  refs: string[]
+  subject: string
+  author: string
+  // コミット日時(UNIX 秒)
+  at: number
+}
+
+export type Graph = {
+  commits: GraphCommit[]
+  // ワークツリーで開いているブランチ。グラフで印を付ける
+  worktreeBranches: string[]
+  // 読み込んだ時刻(ミリ秒)。更新ボタンが効いたことを見せる
+  loadedAt: number
+  // 最後の読み直しで git を読めなかった。commits は前に読めた分
+  isFailed?: boolean
+}
+
+export type PaneTab = 'history' | 'git'
+
 declare module 'claude-code' {
   interface PluginState {
     'session-log': {
@@ -107,6 +131,9 @@ declare module 'claude-code' {
       // Haiku が付けたセッション全体の作業の概要。最初の指示が終わるまでは null
       overview: string | null
       background: Background[]
+      tab: PaneTab
+      // まだ読んでいなければ null
+      graph: Graph | null
     }
   }
 }
