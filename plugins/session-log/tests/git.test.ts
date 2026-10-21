@@ -21,6 +21,8 @@ type FakeRepo = {
   otherWorktrees: string[]
   // origin の URL。無ければ null
   remote: string | null
+  // HEAD が origin/develop まで届いているか(merge-base --is-ancestor の答え)
+  pushed: boolean
 }
 
 const sha = (n: number) => `${String(n).repeat(7)}${'0'.repeat(33)}`
@@ -38,6 +40,7 @@ const fakeGit = (on: On) => {
     distance: {},
     otherWorktrees: [],
     remote: null,
+    pushed: false,
   }
   const head = () => repo.history.at(-1)?.sha ?? ''
   const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -67,6 +70,7 @@ const fakeGit = (on: On) => {
     }
     if (command === 'symbolic-ref --short refs/remotes/origin/HEAD') return answer('origin/develop')
     if (command === 'status --porcelain') return answer(repo.dirty.join('\n'))
+    if (command === 'merge-base --is-ancestor HEAD origin/develop') return answer('', repo.pushed ? 0 : 1)
     if (command.startsWith('rev-list --count')) return answer(String(repo.ahead))
     // --first-parent が付いていることも確かめる。偽の履歴は一直線なので結果は変わらない
     if (args[0] === 'log' && args.includes('--first-parent')) {
@@ -272,47 +276,66 @@ describe('作業のコミットとマージ状況', () => {
     expect(texts.filter(text => !glyphs.includes(text.text.trim())).every(text => text.props.backgroundColor === undefined)).toBe(true)
   })
 
-  test('帯の最後に、セッションのコミット数とマージ済みの数を1つの札で出す', async ($, on) => {
+  test('未マージがあるあいだは未マージの数を、develop に入ると「develop マージ済み・未push」、origin まで届くと「push 済み」を出す', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
 
     await submit($, clock, '見せて')
     await $.turn.start({ text: '見せて', turnId: 't1' })
-    git.commit('一つ目', ['claude/1-work'])
+    git.repo.ahead = 2
+    git.repo.dirty = [' M a.ts']
+    git.commit('一つ目')
     await runGit($, 'git commit -m 一つ目')
-    git.commit('二つ目', ['develop'])
-    await runGit($, 'git commit -m 二つ目')
+    // 未コミットと未マージは別の札で並べる
+    expect((await placeRow($)).slice(-2)).toEqual(['✏️ 未コミット 1', '⬆️ 未マージ 2'])
+
+    git.repo.ahead = 0
+    git.repo.dirty = []
+    await runGit($, 'git merge claude/1-work')
+    expect((await placeRow($)).at(-1)).toBe('✅ develop マージ済み・未push')
+
+    git.repo.pushed = true
+    await runGit($, 'git push')
+    const row = await placeRow($)
+    expect(row.at(-1)).toBe('☁️ push 済み')
+    expect(row.join('\n')).not.toMatch(/マージ済み|コミット \d/)
+  })
+
+  test('このセッションでコミットしていなければ、未マージ 0 でもマージ済み・push 済みを出さない', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.pushed = true
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
     await complete($, 't1', 'answer')
-    await submit($, clock, '続けて')
-    await $.turn.start({ text: '続けて', turnId: 't2' })
-    git.commit('三つ目', ['develop', 'origin/develop'])
-    await runGit($, 'git commit -m 三つ目')
 
-    expect((await placeRow($, '続けて')).at(-1)).toBe('📦 コミット 3(マージ済み 2)')
+    expect((await placeRow($)).join('\n')).not.toMatch(/マージ済み|push 済み/)
   })
 
-  test('マージ済みが 0 件なら「(マージ済み 0)」を付けない。コミットが無ければ札を出さない', async ($, on) => {
+  test('メインの作業ツリーの develop では、状態の札を出さない', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
-
-    await submit($, clock, '見せて')
-    await $.turn.start({ text: '見せて', turnId: 't1' })
-    expect(await bandText($)).not.toMatch(/📦/)
-
-    git.commit('一つ目', ['claude/1-work'])
-    await runGit($, 'git commit -m 一つ目')
-    const shown = await bandText($)
-    expect(shown).toMatch(/📦 コミット 1$/m)
-    expect(shown).not.toMatch(/マージ済み/)
-  })
-
-  test('デスクトップの帯には、コミットの札も線画アイコンで出す', async ($, on) => {
-    const clock = setup(on)
-    const git = fakeGit(on)
+    git.repo.top = '/repo'
+    git.repo.branch = 'develop'
+    git.repo.ahead = 3
 
     await submit($, clock, '見せて')
     await $.turn.start({ text: '見せて', turnId: 't1' })
     git.commit('一つ目', ['develop'])
+    await runGit($, 'git commit -m 一つ目')
+
+    expect((await placeRow($)).join('\n')).not.toMatch(/未マージ|マージ済み|push 済み/)
+  })
+
+  test('デスクトップの帯には、マージ済み・push 済みの札も線画アイコンで出す', async ($, on) => {
+    const clock = setup(on)
+    const git = fakeGit(on)
+    git.repo.pushed = true
+
+    await submit($, clock, '見せて')
+    await $.turn.start({ text: '見せて', turnId: 't1' })
+    git.commit('一つ目', ['develop', 'origin/develop'])
     await runGit($, 'git commit -m 一つ目')
 
     const ui = await $.ui.mount({
@@ -325,8 +348,8 @@ describe('作業のコミットとマージ状況', () => {
     const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
     await ui.unmount()
 
-    expect(alts).toContain('コミット')
-    expect(texts).toContain('コミット 1(マージ済み 1)')
+    expect(alts).toContain('push 済み')
+    expect(texts).toContain('push 済み')
   })
 
   const issueLinks = async ($: Engine, surface: 'terminal' | 'desktop') => {

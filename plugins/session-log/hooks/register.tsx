@@ -281,7 +281,7 @@ const githubUrlOf = (remote: string | null) => {
   return matched ? `https://github.com/${matched[1]}/${matched[2]}` : null
 }
 
-type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead' | 'commits'
+type ChipKind = 'local' | 'cloud' | 'issue' | 'from' | 'worktree' | 'branch' | 'dirty' | 'ahead' | 'merged' | 'pushed'
 type Chip = { kind: ChipKind; text: string; href?: string }
 
 // 色は明るい配色でも暗い配色でも読める中間の濃さ。ブランチ名は太字にするのでアイコンだけ薄くする
@@ -295,7 +295,8 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
   branch: { color: '#8A877F', name: 'ブランチ', emoji: '🌿', icon: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>' },
   dirty: { color: '#D08A10', name: '未コミット', emoji: '✏️', icon: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>' },
   ahead: { color: '#E0682C', name: '未マージ', emoji: '⬆️', icon: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>' },
-  commits: { color: '#D6537F', name: 'コミット', emoji: '📦', icon: '<circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/>' },
+  merged: { color: '#22A055', name: 'マージ済み', emoji: '✅', icon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
+  pushed: { color: '#0EA5E9', name: 'push 済み', emoji: '☁️', icon: '<path d="m17 15-5.5 5.5L9 18"/><path d="M5 17.743A7 7 0 1 1 15.71 10h1.79a4.5 4.5 0 0 1 1.5 8.742"/>' },
 }
 
 const ICON_SIZE = 14
@@ -310,19 +311,13 @@ const iconSvg = (kind: ChipKind) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
   `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
 
-// 同じ sha は1回、書き換えで消えた gone は作り直した側と二重になるので数えない
-const commitTally = (list: Entry[]) => {
-  const states = new Map<string, CommitState>()
-  for (const commit of list.flatMap(entry => entry.commits).filter(commit => commit.state !== 'gone')) {
-    const seen = states.get(commit.sha)
-    if (!seen || commit.state === 'merged' || commit.state === 'pushed') states.set(commit.sha, commit.state)
-  }
-  const merged = [...states.values()].filter(state => state === 'merged' || state === 'pushed').length
-  return { total: states.size, merged }
-}
+// 書き換えで消えた gone は作り直した側と二重になるので数えない
+const hasSessionCommits = (list: Entry[]) => list.some(entry => entry.commits.some(commit => commit.state !== 'gone'))
 
-// 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2 コミット 3(マージ済み 2)(それぞれにアイコン)
-const placeChips = (where: Place, tally: { total: number; merged: number }): Chip[] => {
+// 例: ローカル #160 feature から ワークツリー dispatch-by-slot 未コミット 3 未マージ 2(それぞれにアイコン)。
+// 未マージが無くなると、develop マージ済み・未push か push 済み のどちらかを出す。
+// 切ったばかりのブランチも未マージ 0 なので、このセッションでコミットしたときだけ出す
+const placeChips = (where: Place, isWorked: boolean): Chip[] => {
   const issue = where.branch ? ISSUE_BRANCH.exec(where.branch) : null
   // 前の版で覚えた場所には githubUrl が無い
   const githubUrl = where.githubUrl ?? null
@@ -336,9 +331,8 @@ const placeChips = (where: Place, tally: { total: number; merged: number }): Chi
     where.branch ? { kind: 'branch', text: issue?.[2] ?? branchLabel(where.branch) } : null,
     where.dirty > 0 ? { kind: 'dirty', text: `未コミット ${where.dirty}` } : null,
     where.base && where.ahead > 0 ? { kind: 'ahead', text: `未マージ ${where.ahead}` } : null,
-    tally.total > 0
-      ? { kind: 'commits', text: `コミット ${tally.total}${tally.merged > 0 ? `(マージ済み ${tally.merged})` : ''}` }
-      : null,
+    isWorked && where.landed === 'merged' ? { kind: 'merged', text: `${where.base} マージ済み・未push` } : null,
+    isWorked && where.landed === 'pushed' ? { kind: 'pushed', text: 'push 済み' } : null,
   ]
   return chips.filter((chip): chip is Chip => chip !== null)
 }
@@ -346,6 +340,12 @@ const placeChips = (where: Place, tally: { total: number; merged: number }): Chi
 async function gitLine($: EngineInterface, args: string[], cwd?: string) {
   const ran = await $.process.run(['git', ...args], { timeoutMs: 5000, ...(cwd ? { cwd } : {}) })
   return ran.exitCode === 0 ? ran.stdout.trim() || null : null
+}
+
+// 何も出力しない判定(merge-base --is-ancestor など)は終了コードで答えを読む
+async function gitOk($: EngineInterface, args: string[]) {
+  const ran = await $.process.run(['git', ...args], { timeoutMs: 5000 })
+  return ran.exitCode === 0
 }
 
 const lines = (text: string | null) => (text ? text.split('\n').filter(line => line !== '') : [])
@@ -581,8 +581,15 @@ async function readPlace($: EngineInterface) {
   const top = await gitLine($, ['rev-parse', '--show-toplevel'])
   const branch = await gitLine($, ['branch', '--show-current'])
   const base = repo ? await baseBranch($, repo.root) : null
-  const ahead =
-    base && branch && branch !== base ? Number(await gitLine($, ['rev-list', '--count', `${base}..HEAD`])) || 0 : 0
+  const isWorkBranch = Boolean(base && branch && branch !== base)
+  const ahead = isWorkBranch ? Number(await gitLine($, ['rev-list', '--count', `${base}..HEAD`])) || 0 : 0
+  // 未マージが無ければ、origin の基点ブランチまで届いたかで push 済みかを分ける
+  const landed =
+    isWorkBranch && ahead === 0
+      ? (await gitOk($, ['merge-base', '--is-ancestor', 'HEAD', `origin/${base}`]))
+        ? ('pushed' as const)
+        : ('merged' as const)
+      : null
   const worktree = repo && top && top !== repo.root ? basename(top) : null
   // 切った元はあとでメインの作業ツリーが切り替わると推定が変わるので、初めて見たときの値を使い続ける
   const previous = await read($, place)
@@ -603,6 +610,7 @@ async function readPlace($: EngineInterface) {
     githubUrl: githubUrlOf(repo?.remote ?? null),
     dirty: lines(await gitLine($, ['status', '--porcelain'])).length,
     ahead,
+    landed,
   }
   await update($, place, () => where)
 }
@@ -1567,7 +1575,7 @@ export const register: Register = on => {
     // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す
     const placeRow = where && (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {placeChips(where, commitTally(list)).map(chip => {
+        {placeChips(where, hasSessionCommits(list)).map(chip => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
           // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側

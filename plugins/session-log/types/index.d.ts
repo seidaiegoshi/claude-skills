@@ -84,6 +84,9 @@ export type Place = {
   // 未コミットのファイル数と、基点ブランチに無いコミットの数
   dirty: number
   ahead: number
+  // 未マージが無い作業ブランチで、基点ブランチまで(merged)か origin の基点ブランチまで(pushed)届いたか。
+  // 基点ブランチそのものや未マージがあるとき、前の版で覚えた場所では null か無い
+  landed?: 'merged' | 'pushed' | null
 }
 
 // 指示が終わっても裏で走り続ける作業。サブエージェントは agentId、Bash は通知と照らす ID(取れなければ null)

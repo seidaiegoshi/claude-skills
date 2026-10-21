@@ -1,7 +1,7 @@
 {
   "name": "session-log",
   "description": "セッションで出した指示の履歴・送信待ちの指示・モデルのタスク一覧・作業のコミット・マージ・PR などの git 操作と、終わった指示の要約と、作業中の指示の進捗バーとセッションの概要・タイトルをペインと入力欄の上の帯に出し、ペインの Git タブに全ブランチのコミットグラフを描く mod",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "author": {
     "name": "seidaiegoshi",
     "url": "https://github.com/seidaiegoshi"
