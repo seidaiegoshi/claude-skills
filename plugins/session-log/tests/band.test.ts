@@ -117,7 +117,7 @@ describe('帯を押してペインを開け閉めする', () => {
       await band.unmount()
     })
 
-    test(`${surface}: ブランチ名の手前の 🔀 は GitGraph タブ、概要の先頭の 🕘 は履歴タブでペインを開き、同じタブをもう一度押すと閉じる`, async ($, on) => {
+    test(`${surface}: ブランチ名の手前の Git の札は GitGraph タブ、概要の先頭の履歴の札は履歴タブでペインを開き、同じタブをもう一度押すと閉じる`, async ($, on) => {
       const clock = setup(on)
       const open = fakePanes(on)
       const activeTab = async () => {
@@ -139,11 +139,11 @@ describe('帯を押してペインを開け閉めする', () => {
       const band = await mountBand($, surface)
       await band.press({ key: 'band-git' })
       expect(open.has('session-log')).toBe(true)
-      expect(await activeTab()).toBe('🔀 GitGraph')
+      expect(await activeTab()).toBe('GitGraph')
 
       await band.press({ key: 'band-history' })
       expect(open.has('session-log')).toBe(true)
-      expect(await activeTab()).toBe('🕘 セッション履歴')
+      expect(await activeTab()).toBe('セッション履歴')
 
       await band.press({ key: 'band-history' })
       expect(open.has('session-log')).toBe(false)

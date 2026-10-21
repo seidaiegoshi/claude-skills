@@ -300,12 +300,29 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
 
 const ICON_SIZE = 14
 
-// 帯ではこの絵文字だけを押せる印にする。絵文字は色を持つので、デスクトップのボタンでも色付きで見える
-const TAB_ICON: Record<PaneTab, string> = { history: '🕘', git: '🔀' }
+// 帯の札。Button は Svg を包めないので、デスクトップは淡い色の札に線画と押せる名前を並べる。ターミナルは絵文字を添える
+const TAB_STYLE: Record<PaneTab, { color: string; tint: string; label: string; emoji: string; icon: string }> = {
+  history: {
+    color: '#3B82F6',
+    tint: '#3B82F629',
+    label: '履歴',
+    emoji: '🕘',
+    icon: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  },
+  git: {
+    color: '#E0682C',
+    tint: '#E0682C29',
+    label: 'Git',
+    emoji: '🔀',
+    icon: '<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>',
+  },
+}
 
-const iconSvg = (kind: ChipKind) =>
+const lineSvg = (color: string, body: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
-  `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
+  `stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
+
+const iconSvg = (kind: ChipKind) => lineSvg(CHIP_STYLE[kind].color, CHIP_STYLE[kind].icon)
 
 // 同じ sha は1回、書き換えで消えた gone は作り直した側と二重になるので数えない
 const commitTally = (list: Entry[]) => {
@@ -1323,8 +1340,8 @@ export const register: Register = on => {
     )
     const tabRow = (
       <Box flexDirection="row" gap={1}>
-        {tabButton('history', `${TAB_ICON.history} セッション履歴`)}
-        {tabButton('git', `${TAB_ICON.git} GitGraph`)}
+        {tabButton('history', 'セッション履歴')}
+        {tabButton('git', 'GitGraph')}
       </Box>
     )
 
@@ -1547,11 +1564,37 @@ export const register: Register = on => {
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
 
-    const tabIcon = (key: string, tab: PaneTab) => (
-      <Box key={key} flexShrink={0}>
-        <Button key={key} plain label={TAB_ICON[tab]} onPress={() => void togglePane($, tab)} />
-      </Box>
-    )
+    // 押せるのは名前の文字。下線と札の枠で押せると分かるようにする
+    const tabIcon = (key: string, tab: PaneTab) => {
+      const style = TAB_STYLE[tab]
+      const name = (
+        <Button key={key} plain onPress={() => void togglePane($, tab)}>
+          <Text color={style.color} underline bold>
+            {Svg ? style.label : `${style.emoji} ${style.label}`}
+          </Text>
+        </Button>
+      )
+      return Svg ? (
+        <Box
+          key={`${key}-chip`}
+          flexShrink={0}
+          flexDirection="row"
+          alignItems="center"
+          gap={1}
+          paddingX={1}
+          borderStyle="round"
+          borderColor={style.color}
+          backgroundColor={style.tint}
+        >
+          <Svg source={lineSvg(style.color, style.icon)} alt={style.label} width={ICON_SIZE} height={ICON_SIZE} />
+          {name}
+        </Box>
+      ) : (
+        <Box key={`${key}-chip`} flexShrink={0}>
+          {name}
+        </Box>
+      )
+    }
 
     // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す。
     // GitGraph の印はブランチ名の手前に付け、ブランチが無い(場所をまだ読んでいない)ときは行の最後に置く

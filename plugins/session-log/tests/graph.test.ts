@@ -120,9 +120,9 @@ describe('ペインの Git タブ', () => {
     const pane = await mountPane($, 'desktop')
     const variants = async () =>
       Object.fromEntries((await pane.findAll({ type: 'Button' })).filter(b => String(b.props.key).startsWith('tab-')).map(b => [b.props.label, b.props.variant]))
-    expect(await variants()).toEqual({ '🕘 セッション履歴': 'primary', '🔀 GitGraph': 'secondary' })
+    expect(await variants()).toEqual({ セッション履歴: 'primary', GitGraph: 'secondary' })
     await pane.press({ key: 'tab-git' })
-    expect(await variants()).toEqual({ '🕘 セッション履歴': 'secondary', '🔀 GitGraph': 'primary' })
+    expect(await variants()).toEqual({ セッション履歴: 'secondary', GitGraph: 'primary' })
     await pane.unmount()
   })
 

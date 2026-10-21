@@ -99,10 +99,10 @@ const fakeGit = (on: On) => {
 
 const runGit = ($: Engine, command: string) => $.tool.call({ tool: 'Bash', command })
 
-// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を切り出す
+// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を、押せる Git・履歴の札を除いて切り出す
 const placeRow = async ($: Engine, title = '見せて') => {
   const texts = (await bandText($)).split('\n').map(text => text.trim())
-  return texts.slice(0, texts.indexOf(title))
+  return texts.slice(0, texts.indexOf(title)).filter(text => text !== '🔀 Git' && text !== '🕘 履歴')
 }
 
 describe('作業のコミットとマージ状況', () => {
@@ -207,7 +207,7 @@ describe('作業のコミットとマージ状況', () => {
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    test(`${surface}: 帯の GitGraph の印 🔀 はブランチ名の手前に、履歴の印 🕘 は2行目の先頭に、絵文字だけで出す`, async ($, on) => {
+    test(`${surface}: 帯の Git の札はブランチ名の手前に、履歴の札は2行目の先頭に出し、名前に下線を引いて押せると示す`, async ($, on) => {
       const clock = setup(on)
       const git = fakeGit(on)
       git.repo.branch = 'claude/116-manifest-print'
@@ -232,8 +232,15 @@ describe('作業のコミットとマージ状況', () => {
       const worktree = at(element => element.type === 'Text' && element.text.includes('ワークツリー'))
       const title = at(element => element.type === 'Text' && element.text === '見せて')
 
-      expect(all[gitIcon]?.props.label).toBe('🔀')
-      expect(all[historyIcon]?.props.label).toBe('🕘')
+      expect(all[gitIcon]?.text).toBe(surface === 'desktop' ? 'Git' : '🔀 Git')
+      expect(all[historyIcon]?.text).toBe(surface === 'desktop' ? '履歴' : '🕘 履歴')
+      const names = all.filter(element => element.type === 'Text' && ['Git', '履歴'].some(name => element.text.endsWith(name)))
+      expect(names.every(element => element.props.underline === true)).toBe(true)
+      // デスクトップは他の札と同じ線画を、淡い色の札の中に添える
+      if (surface === 'desktop') {
+        expect(all.filter(element => element.type === 'Svg').map(svg => svg.props.alt)).toEqual(expect.arrayContaining(['Git', '履歴']))
+        expect(all.find(element => element.key === 'band-git-chip')?.props.backgroundColor).toBeDefined()
+      }
       expect(worktree).toBeLessThan(gitIcon)
       expect(gitIcon).toBeLessThan(branch)
       expect(branch).toBeLessThan(historyIcon)
