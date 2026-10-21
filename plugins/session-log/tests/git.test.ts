@@ -103,10 +103,10 @@ const fakeGit = (on: On) => {
 
 const runGit = ($: Engine, command: string) => $.tool.call({ tool: 'Bash', command })
 
-// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を、3行目の履歴・GitGraph の記号を除いて切り出す
+// 帯の札は1枚ずつ別の Text になる。タイトル(Haiku が答えないので指示の1行目)より前を、3行目の履歴・Git の札を除いて切り出す
 const placeRow = async ($: Engine, title = '見せて') => {
   const texts = (await bandText($)).split('\n').map(text => text.trim())
-  return texts.slice(0, texts.indexOf(title)).filter(text => text !== '◷' && text !== '⑂')
+  return texts.slice(0, texts.indexOf(title)).filter(text => text !== '🕘 履歴' && text !== '🔀 Git')
 }
 
 describe('作業のコミットとマージ状況', () => {
@@ -211,7 +211,7 @@ describe('作業のコミットとマージ状況', () => {
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    test(`${surface}: 帯の履歴 ◷ と GitGraph ⑂ の記号は、3行目のタイトルの手前に色付きで並べる`, async ($, on) => {
+    test(`${surface}: 帯の履歴・Git の札は、3行目のタイトルの手前にアイコンと名前で並べる`, async ($, on) => {
       const clock = setup(on)
       const git = fakeGit(on)
       git.repo.branch = 'claude/116-manifest-print'
@@ -235,19 +235,21 @@ describe('作業のコミットとマージ状況', () => {
       const branch = at(element => element.type === 'Text' && element.text.includes('manifest-print'))
       const title = at(element => element.type === 'Text' && element.text === '見せて')
 
-      expect(all[historyIcon]?.text.trim()).toBe('◷')
-      expect(all[gitIcon]?.text.trim()).toBe('⑂')
+      expect(all[historyIcon]?.text).toBe(surface === 'desktop' ? '履歴' : '🕘 履歴')
+      expect(all[gitIcon]?.text).toBe(surface === 'desktop' ? 'Git' : '🔀 Git')
       expect(branch).toBeLessThan(historyIcon)
       expect(historyIcon).toBeLessThan(gitIcon)
       expect(gitIcon).toBeLessThan(title)
-      const glyphs = all.filter(element => element.type === 'Text' && ['◷', '⑂'].includes(element.text.trim()))
-      expect(glyphs.every(element => element.props.color !== undefined)).toBe(true)
-      // 淡い背景はデスクトップだけ。ターミナルは 8 桁の色を塗れない
-      expect(glyphs.every(element => (element.props.backgroundColor !== undefined) === (surface === 'desktop'))).toBe(true)
+      // デスクトップのボタンは文字の色を描かないので、色はボタンの外の線画で出す
+      if (surface === 'desktop') {
+        const icons = all.filter(element => element.type === 'Svg' && ['履歴', 'Git'].includes(String(element.props.alt)))
+        expect(icons.map(icon => icon.props.alt)).toEqual(['履歴', 'Git'])
+        expect(at(element => element === icons[0])).toBeLessThan(historyIcon)
+      }
     })
   }
 
-  test('デスクトップの帯は、絵文字の代わりに種類ごとの線画アイコンを出し、文字もアイコンと同じ色にする。1行目の札に背景色は付けない', async ($, on) => {
+  test('デスクトップの帯は、絵文字の代わりに種類ごとの線画アイコンを出し、文字もアイコンと同じ色にする。背景色は付けない', async ($, on) => {
     const clock = setup(on)
     const git = fakeGit(on)
     git.repo.branch = 'claude/116-manifest-print'
@@ -271,9 +273,7 @@ describe('作業のコミットとマージ状況', () => {
     expect(alts).toEqual(expect.arrayContaining(['ローカル', 'Issue', '切った元', 'ワークツリー', 'ブランチ', '未コミット', '未マージ']))
     expect(texts.find(text => text.text === '#116')?.props.color).toBeDefined()
     expect(texts.some(text => text.text.includes('💻'))).toBe(false)
-    // 背景色は3行目の履歴・GitGraph の記号にだけ敷く
-    const glyphs = ['◷', '⑂']
-    expect(texts.filter(text => !glyphs.includes(text.text.trim())).every(text => text.props.backgroundColor === undefined)).toBe(true)
+    expect(texts.every(text => text.props.backgroundColor === undefined)).toBe(true)
   })
 
   test('未マージがあるあいだは未マージの数を、develop に入ると「develop マージ済み・未push」、origin まで届くと「push 済み」を出す', async ($, on) => {

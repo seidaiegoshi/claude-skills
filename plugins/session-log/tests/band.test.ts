@@ -117,7 +117,7 @@ describe('帯を押してペインを開け閉めする', () => {
       await band.unmount()
     })
 
-    test(`${surface}: 3行目の ⑂ は GitGraph タブ、◷ は履歴タブでペインを開き、同じタブをもう一度押すと閉じる`, async ($, on) => {
+    test(`${surface}: 3行目の Git の札は GitGraph タブ、履歴の札は履歴タブでペインを開き、同じタブをもう一度押すと閉じる`, async ($, on) => {
       const clock = setup(on)
       const open = fakePanes(on)
       const activeTab = async () => {

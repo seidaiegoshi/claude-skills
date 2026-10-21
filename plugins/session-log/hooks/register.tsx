@@ -301,15 +301,28 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
 
 const ICON_SIZE = 14
 
-// 帯の札。線画の札は大きすぎたので、色付きの記号1文字にする。デスクトップは淡い背景を敷いて押せると分かるようにする
-const TAB_STYLE: Record<PaneTab, { color: string; tint: string; glyph: string }> = {
-  history: { color: '#3B82F6', tint: '#3B82F629', glyph: '◷' },
-  git: { color: '#E0682C', tint: '#E0682C29', glyph: '⑂' },
+// 帯の札。デスクトップのボタンは中の文字の色を描かないので、色は Button の外に置いた線画で出す。
+// ターミナルは線画を描けないので、絵文字と色付きの文字にする
+const TAB_STYLE: Record<PaneTab, { color: string; label: string; emoji: string; icon: string }> = {
+  history: {
+    color: '#3B82F6',
+    label: '履歴',
+    emoji: '🕘',
+    icon: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  },
+  git: {
+    color: '#E0682C',
+    label: 'Git',
+    emoji: '🔀',
+    icon: '<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>',
+  },
 }
 
-const iconSvg = (kind: ChipKind) =>
+const lineSvg = (color: string, body: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
-  `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
+  `stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
+
+const iconSvg = (kind: ChipKind) => lineSvg(CHIP_STYLE[kind].color, CHIP_STYLE[kind].icon)
 
 // 書き換えで消えた gone は作り直した側と二重になるので数えない
 const hasSessionCommits = (list: Entry[]) => list.some(entry => entry.commits.some(commit => commit.state !== 'gone'))
@@ -1558,14 +1571,14 @@ export const register: Register = on => {
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
 
-    // ターミナルは 8 桁の色を背景に塗れないので、色付きの記号だけにする
     const tabIcon = (key: string, tab: PaneTab) => {
       const style = TAB_STYLE[tab]
       return (
-        <Box key={`${key}-chip`} flexShrink={0}>
+        <Box key={`${key}-chip`} flexShrink={0} flexDirection="row" alignItems="center" gap={1}>
+          {Svg && <Svg source={lineSvg(style.color, style.icon)} alt={style.label} width={ICON_SIZE} height={ICON_SIZE} />}
           <Button key={key} plain onPress={() => void togglePane($, tab)}>
-            <Text color={style.color} backgroundColor={Svg ? style.tint : undefined} bold>
-              {` ${style.glyph} `}
+            <Text color={style.color} bold>
+              {Svg ? style.label : `${style.emoji} ${style.label}`}
             </Text>
           </Button>
         </Box>
