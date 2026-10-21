@@ -300,29 +300,15 @@ const CHIP_STYLE: Record<ChipKind, { color: string; name: string; emoji: string;
 
 const ICON_SIZE = 14
 
-// 帯の札。Button は Svg を包めないので、デスクトップは淡い色の札に線画と押せる名前を並べる。ターミナルは絵文字を添える
-const TAB_STYLE: Record<PaneTab, { color: string; tint: string; label: string; emoji: string; icon: string }> = {
-  history: {
-    color: '#3B82F6',
-    tint: '#3B82F629',
-    label: '履歴',
-    emoji: '🕘',
-    icon: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
-  },
-  git: {
-    color: '#E0682C',
-    tint: '#E0682C29',
-    label: 'Git',
-    emoji: '🔀',
-    icon: '<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>',
-  },
+// 帯の札。線画の札は大きすぎたので、色付きの記号1文字にする。デスクトップは淡い背景を敷いて押せると分かるようにする
+const TAB_STYLE: Record<PaneTab, { color: string; tint: string; glyph: string }> = {
+  history: { color: '#3B82F6', tint: '#3B82F629', glyph: '◷' },
+  git: { color: '#E0682C', tint: '#E0682C29', glyph: '⑂' },
 }
 
-const lineSvg = (color: string, body: string) =>
+const iconSvg = (kind: ChipKind) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 24 24" fill="none" ` +
-  `stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
-
-const iconSvg = (kind: ChipKind) => lineSvg(CHIP_STYLE[kind].color, CHIP_STYLE[kind].icon)
+  `stroke="${CHIP_STYLE[kind].color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${CHIP_STYLE[kind].icon}</svg>`
 
 // 同じ sha は1回、書き換えで消えた gone は作り直した側と二重になるので数えない
 const commitTally = (list: Entry[]) => {
@@ -1564,44 +1550,24 @@ export const register: Register = on => {
     // ターミナルの部品表にも Svg はあるが何も描かれないので、デスクトップだけで使う
     const Svg = e.surface === 'desktop' && 'Svg' in parts ? parts.Svg : null
 
-    // 押せるのは名前の文字。下線と札の枠で押せると分かるようにする
+    // ターミナルは 8 桁の色を背景に塗れないので、色付きの記号だけにする
     const tabIcon = (key: string, tab: PaneTab) => {
       const style = TAB_STYLE[tab]
-      const name = (
-        <Button key={key} plain onPress={() => void togglePane($, tab)}>
-          <Text color={style.color} underline bold>
-            {Svg ? style.label : `${style.emoji} ${style.label}`}
-          </Text>
-        </Button>
-      )
-      return Svg ? (
-        <Box
-          key={`${key}-chip`}
-          flexShrink={0}
-          flexDirection="row"
-          alignItems="center"
-          gap={1}
-          paddingX={1}
-          borderStyle="round"
-          borderColor={style.color}
-          backgroundColor={style.tint}
-        >
-          <Svg source={lineSvg(style.color, style.icon)} alt={style.label} width={ICON_SIZE} height={ICON_SIZE} />
-          {name}
-        </Box>
-      ) : (
+      return (
         <Box key={`${key}-chip`} flexShrink={0}>
-          {name}
+          <Button key={key} plain onPress={() => void togglePane($, tab)}>
+            <Text color={style.color} backgroundColor={Svg ? style.tint : undefined} bold>
+              {` ${style.glyph} `}
+            </Text>
+          </Button>
         </Box>
       )
     }
 
-    // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す。
-    // GitGraph の印はブランチ名の手前に付け、ブランチが無い(場所をまだ読んでいない)ときは行の最後に置く
-    const chips = where ? placeChips(where, commitTally(list)) : []
-    const placeRow = (
+    // デスクトップは線画のアイコン、ターミナルは絵文字を添える。狭いときは項目の切れ目で折り返す
+    const placeRow = where && (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {chips.map(chip => {
+        {placeChips(where, commitTally(list)).map(chip => {
           const style = CHIP_STYLE[chip.kind]
           const isBranch = chip.kind === 'branch'
           // Issue 番号は押すと GitHub の Issue を開く。開くのはリンクを受けた画面側
@@ -1611,15 +1577,15 @@ export const register: Register = on => {
               {chip.href ? <Link href={chip.href}>{chip.text}</Link> : chip.text}
             </Text>
           )
-          return (
+          return Svg ? (
             <Box key={chip.kind} flexDirection="row" alignItems="center" gap={1}>
-              {isBranch && tabIcon('band-git', 'git')}
-              {Svg && <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />}
+              <Svg source={iconSvg(chip.kind)} alt={style.name} width={ICON_SIZE} height={ICON_SIZE} />
               {label}
             </Box>
+          ) : (
+            <Box key={chip.kind}>{label}</Box>
           )
         })}
-        {!chips.some(chip => chip.kind === 'branch') && tabIcon('band-git', 'git')}
       </Box>
     )
 
@@ -1642,23 +1608,16 @@ export const register: Register = on => {
       ? { ...meterOf(target), label: statusWord, tone: 'running' }
       : meterOf(target)
 
-    // 履歴の印は概要の先頭に置く。最初の指示が終わるまでは概要が無いので印だけを出す
+    // 最初の指示が終わるまでは概要が無いので出さない
     const overview = await read($, sessionOverview)
-    const overviewRow = (
-      <Box flexDirection="row" alignItems="center" gap={1}>
-        {tabIcon('band-history', 'history')}
-        {overview && (
-          <Box flexGrow={1} flexShrink={1} minWidth={0}>
-            <Text wrap="wrap">{overview}</Text>
-          </Box>
-        )}
-      </Box>
-    )
+    const overviewRow = overview && <Text wrap="wrap">{overview}</Text>
 
     // 進行中の作業の行はタイトルと経過時間だけにして、タイトルが進捗バーに押し出されないようにする。
     // Button は幅を持たないので、包む Box で残りの幅に縛らないと長いタイトルが折り返さずはみ出す。タイトルは履歴を開く
     const titleRow = (
       <Box flexDirection="row" gap={1}>
+        {tabIcon('band-history', 'history')}
+        {tabIcon('band-git', 'git')}
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           <Button key={PANE} plain onPress={() => void togglePane($, 'history')}>
             <Text wrap="wrap">{title}</Text>
